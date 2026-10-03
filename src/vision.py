@@ -2,7 +2,7 @@ import cv2
 
 print("Starting camera...")
 
-camera = cv2.VideoCapture(0)
+camera = cv2.VideoCapture(1)
 
 if not camera.isOpened():
     print("ERROR: Camera could not be opened")
