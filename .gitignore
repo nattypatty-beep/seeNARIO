@@ -1,6 +1,9 @@
+keys.txt
 keys.sh
 logs.json
 scene.jpg
 alert.mp3
-visionnav
+test.mp3
 test.jpg
+visionnav
+__pycache__/
