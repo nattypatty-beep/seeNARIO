@@ -1,3 +1,3 @@
 # Copy this to keys.txt (same folder) and fill in your real keys.
-GEMINI_API_KEY=paste_gemini_key_here
+GEMINI_API_KEY=AQ.Ab8RN6JkiV2RoFIZHfFjWrCgfXRgsuAFkKmKKb-17rLs2WgqrQ
 ELEVENLABS_API_KEY=sk_ed4302b3f6e9efff527ea7bf28672daa21b3edb4b3c710c5
