@@ -1,37 +1,44 @@
-from google import genai
-from PIL import Image
+import time
 import os, glob
+from google import genai
+from google.genai import errors
+from PIL import Image
 
-# Initialize the Gemini API client
+# Initialize Gemini client
 client = genai.Client()
 
-# Locate image in Downloads
+# Target your sample image in Downloads
 downloads = os.path.expanduser("~/Downloads")
 matches = glob.glob(os.path.join(downloads, "sample.*"))
 
 if not matches:
-    raise FileNotFoundError("Could not find any 'sample' image in your Downloads folder!")
+    raise FileNotFoundError("Could not find 'sample.png' or 'sample.jpg' in Downloads!")
 
 image_path = matches[0]
-print(f"Using image: {image_path}")
-
+print(f"Loading image from: {image_path}")
 image = Image.open(image_path)
 
-# Prompt for object and horizontal position
+# Strict prompt demanding the 3-value output format
 prompt = (
-    "Identify the main objects in this image and their coarse horizontal positions "
-    "(left, center, right). Format your output strictly like this:\n"
-    "object_name, position\n\n"
-    "Example:\n"
-    "chair, center\n"
-    "person, center\n"
-    "backpack, left"
+    "Analyze the image and identify the single most important object directly in front of the camera. "
+    "Your response MUST consist ONLY of three comma-separated values: OBJECT, POSITION, HAZARD.\n"
+    "- OBJECT: Name of the object (e.g., CHAIR, PERSON, WALL, TREE).\n"
+    "- POSITION: Must be strictly one of: LEFT, CENTER, RIGHT.\n"
+    "- HAZARD: Must be strictly one of: YES, NO. (Output YES if it is an obstacle blocking the path, NO if it is just in the background).\n"
+    "Do not include any intro, explanation, markdown formatting, or extra text.\n"
+    "Example exactly like this: TREE, CENTER, NO"
 )
 
-response = client.models.generate_content(
-    model="gemini-2.5-flash",
-    contents=[image, prompt]
-)
-
-print("\n--- Gemini Output ---")
-print(response.text)
+# Call Gemini 3.8 Flash with retry logic for 503 stability
+for attempt in range(3):
+    try:
+        response = client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=[image, prompt]
+        )
+        print("\n--- Raw Output for Pi Parsing ---")
+        print(response.text.strip())
+        break
+    except errors.ServerError:
+        print(f"Server busy (503), retrying... (Attempt {attempt + 1}/3)")
+        time.sleep(3)
