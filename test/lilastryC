@@ -1,0 +1,363 @@
+/*
+ * Webcam obstacle detector using Gemini (C version, Raspberry Pi / Linux).
+ *
+ * Build:
+ *   sudo apt install -y libcurl4-openssl-dev
+ *   wget https://raw.githubusercontent.com/nothings/stb/master/stb_image_write.h
+ *   gcc -O2 -o obstacle obstacle.c -lcurl
+ *
+ * Run:
+ *   export GEMINI_API_KEY="your-key"
+ *   ./obstacle            # uses /dev/video0
+ *   ./obstacle /dev/video1
+ */
+#define _POSIX_C_SOURCE 200809L
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <signal.h>
+#include <time.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <linux/videodev2.h>
+#include <curl/curl.h>
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
+/* ---- config ---- */
+#define MODEL            "gemini-3.6-flash"
+#define CAP_W            640
+#define CAP_H            480
+#define OUT_W            (CAP_W / 2)      /* downscaled before sending */
+#define OUT_H            (CAP_H / 2)
+#define NBUF             4
+#define MIN_INTERVAL     3.0              /* seconds between API calls */
+#define HEARTBEAT        20.0             /* call at least this often */
+#define CHANGE_THRESHOLD 8.0              /* mean luma diff (0-255) */
+#define CHECK_PERIOD     0.2              /* how often to inspect frames */
+#define WARMUP_FRAMES    10
+
+static const char *PROMPT_JSON =
+    "Analyze the image and identify the single most important obstacle directly in front of the camera. "
+    "Your response MUST consist ONLY of three values separated by the pipe symbol (|): OBJECT | POSITION | DANGER.\\n"
+    "- OBJECT: Name of the object (e.g., CHAIR, PERSON, WALL).\\n"
+    "- POSITION: Must be strictly one of: LEFT, CENTER, RIGHT.\\n"
+    "- DANGER: Must be strictly one of: YES, NO. (Output YES if it is an obstacle blocking the path).\\n"
+    "Do not include any intro, explanation, markdown formatting, or extra text.\\n"
+    "Example exactly like this: CHAIR | CENTER | YES";
+
+static volatile sig_atomic_t running = 1;
+static void on_sigint(int s) { (void)s; running = 0; }
+
+static double now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
+/* ---- growable memory buffer (for JPEG output and HTTP response) ---- */
+typedef struct { unsigned char *data; size_t len, cap; } Mem;
+
+static void mem_append(Mem *m, const void *src, size_t n) {
+    if (m->len + n + 1 > m->cap) {
+        size_t nc = m->cap ? m->cap : 4096;
+        while (nc < m->len + n + 1) nc *= 2;
+        m->data = realloc(m->data, nc);
+        if (!m->data) { fprintf(stderr, "out of memory\n"); exit(1); }
+        m->cap = nc;
+    }
+    memcpy(m->data + m->len, src, n);
+    m->len += n;
+    m->data[m->len] = 0;
+}
+
+static void jpeg_sink(void *ctx, void *data, int size) { mem_append((Mem *)ctx, data, (size_t)size); }
+
+static size_t curl_sink(char *ptr, size_t sz, size_t nm, void *ud) {
+    mem_append((Mem *)ud, ptr, sz * nm);
+    return sz * nm;
+}
+
+/* ---- base64 ---- */
+static char *base64(const unsigned char *in, size_t n) {
+    static const char T[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char *out = malloc(4 * ((n + 2) / 3) + 1), *p = out;
+    for (size_t i = 0; i < n; i += 3) {
+        unsigned v = in[i] << 16;
+        if (i + 1 < n) v |= in[i + 1] << 8;
+        if (i + 2 < n) v |= in[i + 2];
+        *p++ = T[(v >> 18) & 63];
+        *p++ = T[(v >> 12) & 63];
+        *p++ = (i + 1 < n) ? T[(v >> 6) & 63] : '=';
+        *p++ = (i + 2 < n) ? T[v & 63] : '=';
+    }
+    *p = 0;
+    return out;
+}
+
+/* ---- V4L2 camera ---- */
+typedef struct { void *start; size_t len; } Buf;
+typedef struct { int fd; Buf bufs[NBUF]; unsigned stride; } Camera;
+
+static int xioctl(int fd, unsigned long req, void *arg) {
+    int r;
+    do { r = ioctl(fd, req, arg); } while (r == -1 && errno == EINTR);
+    return r;
+}
+
+static int camera_open(Camera *c, const char *dev) {
+    c->fd = open(dev, O_RDWR);
+    if (c->fd < 0) { perror("open camera"); return -1; }
+
+    struct v4l2_format fmt;
+    memset(&fmt, 0, sizeof fmt);
+    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    fmt.fmt.pix.width = CAP_W;
+    fmt.fmt.pix.height = CAP_H;
+    fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+    fmt.fmt.pix.field = V4L2_FIELD_ANY;
+    if (xioctl(c->fd, VIDIOC_S_FMT, &fmt) < 0) { perror("VIDIOC_S_FMT"); return -1; }
+    if (fmt.fmt.pix.pixelformat != V4L2_PIX_FMT_YUYV ||
+        fmt.fmt.pix.width != CAP_W || fmt.fmt.pix.height != CAP_H) {
+        fprintf(stderr, "Camera didn't accept YUYV %dx%d (got %ux%u). Try another device node.\n",
+                CAP_W, CAP_H, fmt.fmt.pix.width, fmt.fmt.pix.height);
+        return -1;
+    }
+    c->stride = fmt.fmt.pix.bytesperline ? fmt.fmt.pix.bytesperline : CAP_W * 2;
+
+    struct v4l2_requestbuffers req;
+    memset(&req, 0, sizeof req);
+    req.count = NBUF;
+    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    req.memory = V4L2_MEMORY_MMAP;
+    if (xioctl(c->fd, VIDIOC_REQBUFS, &req) < 0 || req.count < 2) { perror("VIDIOC_REQBUFS"); return -1; }
+
+    for (unsigned i = 0; i < NBUF && i < req.count; i++) {
+        struct v4l2_buffer b;
+        memset(&b, 0, sizeof b);
+        b.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        b.memory = V4L2_MEMORY_MMAP;
+        b.index = i;
+        if (xioctl(c->fd, VIDIOC_QUERYBUF, &b) < 0) { perror("VIDIOC_QUERYBUF"); return -1; }
+        c->bufs[i].len = b.length;
+        c->bufs[i].start = mmap(NULL, b.length, PROT_READ | PROT_WRITE, MAP_SHARED, c->fd, b.m.offset);
+        if (c->bufs[i].start == MAP_FAILED) { perror("mmap"); return -1; }
+        if (xioctl(c->fd, VIDIOC_QBUF, &b) < 0) { perror("VIDIOC_QBUF"); return -1; }
+    }
+
+    enum v4l2_buf_type t = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if (xioctl(c->fd, VIDIOC_STREAMON, &t) < 0) { perror("VIDIOC_STREAMON"); return -1; }
+    return 0;
+}
+
+static void camera_close(Camera *c) {
+    enum v4l2_buf_type t = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    xioctl(c->fd, VIDIOC_STREAMOFF, &t);
+    for (int i = 0; i < NBUF; i++)
+        if (c->bufs[i].start && c->bufs[i].start != MAP_FAILED) munmap(c->bufs[i].start, c->bufs[i].len);
+    close(c->fd);
+}
+
+/* ---- image helpers ---- */
+static inline unsigned char clamp8(int v) { return v < 0 ? 0 : (v > 255 ? 255 : (unsigned char)v); }
+
+/* YUYV -> RGB, subsampled 2x in both directions (pixel 2x is always a Y0 slot). */
+static void yuyv_to_rgb_half(const unsigned char *src, unsigned stride, unsigned char *rgb) {
+    for (int y = 0; y < OUT_H; y++) {
+        const unsigned char *row = src + (size_t)(2 * y) * stride;
+        for (int x = 0; x < OUT_W; x++) {
+            const unsigned char *px = row + (size_t)(2 * x) * 2;
+            int Y = px[0] - 16, U = px[1] - 128, V = px[3] - 128;
+            int c = 298 * Y;
+            unsigned char *o = rgb + (y * OUT_W + x) * 3;
+            o[0] = clamp8((c + 409 * V + 128) >> 8);
+            o[1] = clamp8((c - 100 * U - 208 * V + 128) >> 8);
+            o[2] = clamp8((c + 516 * U + 128) >> 8);
+        }
+    }
+}
+
+#define GW (CAP_W / 4)
+#define GH (CAP_H / 4)
+
+/* Coarse luma grid (every 4th pixel) for cheap change detection. */
+static void sample_gray(const unsigned char *src, unsigned stride, unsigned char *g) {
+    for (int y = 0; y < GH; y++)
+        for (int x = 0; x < GW; x++)
+            g[y * GW + x] = src[(size_t)(4 * y) * stride + (size_t)(4 * x) * 2];
+}
+
+static double mean_abs_diff(const unsigned char *a, const unsigned char *b) {
+    long sum = 0;
+    for (int i = 0; i < GW * GH; i++) sum += abs((int)a[i] - (int)b[i]);
+    return (double)sum / (GW * GH);
+}
+
+/* ---- Gemini call ---- */
+/* Pulls the first "text": "..." value out of the response and unescapes it. */
+static int extract_text(const char *json, char *out, size_t n) {
+    const char *p = strstr(json, "\"text\"");
+    if (!p) return -1;
+    p += 6;
+    while (*p == ' ' || *p == ':' || *p == '\n' || *p == '\t') p++;
+    if (*p != '"') return -1;
+    p++;
+    size_t i = 0;
+    while (*p && *p != '"' && i + 1 < n) {
+        if (*p == '\\' && p[1]) {
+            p++;
+            out[i++] = (*p == 'n') ? ' ' : *p;
+            p++;
+        } else {
+            out[i++] = *p++;
+        }
+    }
+    out[i] = 0;
+    return 0;
+}
+
+static char *trim(char *s) {
+    while (*s == ' ' || *s == '\t' || *s == '\n') s++;
+    char *e = s + strlen(s);
+    while (e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\n' || e[-1] == '\r')) *--e = 0;
+    return s;
+}
+
+/* Returns seconds to wait before the next call (0 = fine). */
+static double analyze(CURL *curl, const char *api_key, const unsigned char *jpeg, size_t jpeg_len) {
+    char *b64 = base64(jpeg, jpeg_len);
+    const char *fmt =
+        "{\"contents\":[{\"parts\":["
+        "{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\"%s\"}},"
+        "{\"text\":\"%s\"}]}]}";
+    size_t body_len = strlen(fmt) + strlen(b64) + strlen(PROMPT_JSON) + 1;
+    char *body = malloc(body_len);
+    snprintf(body, body_len, fmt, b64, PROMPT_JSON);
+
+    char url[256], keyhdr[256];
+    snprintf(url, sizeof url, "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", MODEL);
+    snprintf(keyhdr, sizeof keyhdr, "x-goog-api-key: %s", api_key);
+
+    struct curl_slist *hdrs = NULL;
+    hdrs = curl_slist_append(hdrs, "Content-Type: application/json");
+    hdrs = curl_slist_append(hdrs, keyhdr);
+
+    Mem resp = {0};
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_sink);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+
+    double wait = 0;
+    CURLcode rc = curl_easy_perform(curl);
+    long code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+
+    if (rc != CURLE_OK) {
+        fprintf(stderr, "Network error: %s. Backing off 10s.\n", curl_easy_strerror(rc));
+        wait = 10;
+    } else if (code == 429) {
+        fprintf(stderr, "Rate limited (429). Backing off 30s.\n");
+        wait = 30;
+    } else if (code >= 500) {
+        fprintf(stderr, "Server error (%ld). Backing off 10s.\n", code);
+        wait = 10;
+    } else if (code != 200) {
+        fprintf(stderr, "API error %ld: %.300s\n", code, resp.data ? (char *)resp.data : "");
+        wait = 10;   /* 404 = bad model name, 400/403 = bad key */
+    } else {
+        char text[256];
+        if (extract_text((char *)resp.data, text, sizeof text) == 0) {
+            char *parts[3] = {0};
+            int n = 0;
+            char *save = text, *tok;
+            while (n < 3 && (tok = strsep(&save, "|")) != NULL) parts[n++] = trim(tok);
+            if (n == 3 && !save)
+                printf("🎯 %s | %s | DANGER: %s\n", parts[0], parts[1], parts[2]);
+            else
+                printf("⚠️  Unexpected format: %s\n", text);
+        } else {
+            fprintf(stderr, "Couldn't find text in response: %.300s\n", resp.data ? (char *)resp.data : "");
+        }
+    }
+
+    free(resp.data);
+    free(body);
+    free(b64);
+    curl_slist_free_all(hdrs);
+    return wait;
+}
+
+int main(int argc, char **argv) {
+    const char *dev = argc > 1 ? argv[1] : "/dev/video0";
+    const char *api_key = getenv("GEMINI_API_KEY");
+    if (!api_key) api_key = getenv("GOOGLE_API_KEY");
+    if (!api_key) { fprintf(stderr, "Set GEMINI_API_KEY first.\n"); return 1; }
+
+    signal(SIGINT, on_sigint);
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    CURL *curl = curl_easy_init();
+
+    Camera cam;
+    memset(&cam, 0, sizeof cam);
+    if (camera_open(&cam, dev) < 0) return 1;
+
+    unsigned char *rgb = malloc(OUT_W * OUT_H * 3);
+    unsigned char gray[GW * GH], prev[GW * GH];
+    int have_prev = 0, frames = 0;
+    double last_check = 0, last_call = 0, cooldown = 0;
+
+    printf("Running on %s. Ctrl+C to stop.\n", dev);
+    while (running) {
+        struct v4l2_buffer b;
+        memset(&b, 0, sizeof b);
+        b.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        b.memory = V4L2_MEMORY_MMAP;
+        if (xioctl(cam.fd, VIDIOC_DQBUF, &b) < 0) {
+            if (errno == EINTR) continue;
+            perror("VIDIOC_DQBUF");
+            break;
+        }
+
+        const unsigned char *frame = cam.bufs[b.index].start;
+        double t = now();
+
+        if (frames < WARMUP_FRAMES) {
+            frames++;
+        } else if (t - last_check >= CHECK_PERIOD &&
+                   t - last_call >= MIN_INTERVAL + cooldown) {
+            last_check = t;
+            sample_gray(frame, cam.stride, gray);
+            int changed = !have_prev || mean_abs_diff(prev, gray) > CHANGE_THRESHOLD;
+            int due = changed || (t - last_call >= HEARTBEAT);
+
+            if (due) {
+                yuyv_to_rgb_half(frame, cam.stride, rgb);
+                Mem jpg = {0};
+                stbi_write_jpg_to_func(jpeg_sink, &jpg, OUT_W, OUT_H, 3, rgb, 75);
+
+                cooldown = analyze(curl, api_key, jpg.data, jpg.len);
+                free(jpg.data);
+
+                last_call = now();
+                memcpy(prev, gray, sizeof prev);
+                have_prev = 1;
+            }
+        }
+
+        if (xioctl(cam.fd, VIDIOC_QBUF, &b) < 0) { perror("VIDIOC_QBUF"); break; }
+    }
+
+    printf("\nStopped.\n");
+    camera_close(&cam);
+    free(rgb);
+    curl_easy_cleanup(curl);
+    curl_global_cleanup();
+    return 0;
+}
