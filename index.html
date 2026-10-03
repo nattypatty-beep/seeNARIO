@@ -1,0 +1,1416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>SeeNARIO — Intelligent Vision Assistance</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Sora:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+
+        /* =====================================================
+           RESET
+        ===================================================== */
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            min-height: 100vh;
+
+            background:
+                radial-gradient(
+                    circle at 75% 15%,
+                    rgba(117, 62, 161, 0.13),
+                    transparent 28%
+                ),
+                #10051c;
+
+            color: #ffffff;
+
+            font-family: "DM Sans", sans-serif;
+
+            overflow-x: hidden;
+        }
+
+        ::selection {
+            background: #d8b4fe;
+            color: #16091f;
+        }
+
+
+        /* =====================================================
+           HEADER
+        ===================================================== */
+
+        header {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+
+            height: 78px;
+
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+
+            padding: 0 6vw;
+
+            background: rgba(16, 5, 28, 0.88);
+
+            border-bottom: 1px solid rgba(216, 180, 254, 0.10);
+
+            backdrop-filter: blur(18px);
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+
+            font-family: "Space Grotesk", sans-serif;
+
+            font-size: 23px;
+            font-weight: 700;
+
+            letter-spacing: -0.8px;
+        }
+
+        /*
+            New SeeNARIO logo:
+            radar / vision symbol
+        */
+
+        .logo-mark {
+            width: 34px;
+            height: 34px;
+
+            position: relative;
+
+            border: 2px solid #d8b4fe;
+
+            border-radius: 50%;
+
+            box-shadow:
+                0 0 18px rgba(216, 180, 254, 0.18);
+        }
+
+        .logo-mark::before {
+            content: "";
+
+            position: absolute;
+
+            width: 15px;
+            height: 15px;
+
+            left: 7px;
+            top: 7px;
+
+            border: 2px solid #d8b4fe;
+
+            border-radius: 50%;
+        }
+
+        .logo-mark::after {
+            content: "";
+
+            position: absolute;
+
+            width: 6px;
+            height: 6px;
+
+            background: #d8b4fe;
+
+            border-radius: 50%;
+
+            top: 12px;
+            left: 12px;
+
+            box-shadow:
+                9px -8px 0 -1px #d8b4fe,
+                12px 5px 0 -2px #d8b4fe;
+        }
+
+        nav {
+            display: flex;
+            align-items: center;
+
+            gap: 38px;
+        }
+
+        nav a {
+            color: #b8a9c4;
+
+            text-decoration: none;
+
+            font-family: "Space Grotesk", sans-serif;
+
+            font-size: 14px;
+            font-weight: 500;
+
+            transition:
+                color 0.2s ease,
+                transform 0.2s ease;
+        }
+
+        nav a:hover {
+            color: #d8b4fe;
+            transform: translateY(-1px);
+        }
+
+
+        /* =====================================================
+           HERO
+        ===================================================== */
+
+        .hero {
+            max-width: 1250px;
+
+            margin: 0 auto;
+
+            padding:
+                105px 35px
+                85px;
+        }
+
+        .status {
+            display: inline-flex;
+            align-items: center;
+
+            gap: 9px;
+
+            padding: 9px 15px;
+
+            background: rgba(67, 39, 83, 0.55);
+
+            border: 1px solid #65477b;
+
+            border-radius: 999px;
+
+            color: #d8b4fe;
+
+            font-family: "IBM Plex Mono", monospace;
+
+            font-size: 12px;
+            font-weight: 500;
+
+            letter-spacing: 0.3px;
+
+            margin-bottom: 28px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+
+            background: #d8b4fe;
+
+            border-radius: 50%;
+
+            box-shadow:
+                0 0 0 4px rgba(216, 180, 254, 0.08),
+                0 0 14px rgba(216, 180, 254, 0.85);
+
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+
+            0%, 100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.45;
+            }
+        }
+
+        h1 {
+            max-width: 920px;
+
+            margin-bottom: 28px;
+
+            font-family: "Sora", sans-serif;
+
+            font-size: clamp(38px, 5vw, 62px);
+
+            line-height: 1.04;
+
+            letter-spacing: -3px;
+
+            font-weight: 600;
+        }
+
+        .gradient-text {
+            background:
+                linear-gradient(
+                    100deg,
+                    #ffffff 0%,
+                    #ead8ff 45%,
+                    #c79af3 100%
+                );
+
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+
+            background-clip: text;
+        }
+
+        .subtitle {
+            max-width: 680px;
+
+            margin-bottom: 62px;
+
+            color: #aa9db2;
+
+            font-family: "DM Sans", sans-serif;
+
+            font-size: 18px;
+
+            line-height: 1.75;
+        }
+
+
+        /* =====================================================
+           DASHBOARD
+        ===================================================== */
+
+        .dashboard {
+            display: grid;
+
+            grid-template-columns:
+                minmax(0, 1.9fr)
+                minmax(310px, 0.8fr);
+
+            gap: 28px;
+
+            align-items: stretch;
+        }
+
+        .card {
+            overflow: hidden;
+
+            background: #17101c;
+
+            border:
+                1px solid
+                rgba(216, 180, 254, 0.14);
+
+            border-radius: 20px;
+
+            box-shadow:
+                0 25px 70px rgba(0, 0, 0, 0.30);
+        }
+
+
+        /* =====================================================
+           CARD HEADER
+        ===================================================== */
+
+        .card-header {
+            height: 68px;
+
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+
+            padding: 0 23px;
+
+            border-bottom:
+                1px solid
+                rgba(216, 180, 254, 0.10);
+        }
+
+        .card-title {
+            font-family: "Space Grotesk", sans-serif;
+
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+
+        /* =====================================================
+           LIVE INDICATOR
+        ===================================================== */
+
+        .live-indicator {
+            display: flex;
+            align-items: center;
+
+            gap: 8px;
+
+            color: #d8b4fe;
+
+            font-family: "IBM Plex Mono", monospace;
+
+            font-size: 12px;
+            font-weight: 500;
+
+            letter-spacing: 0.5px;
+        }
+
+        .live-dot {
+            width: 7px;
+            height: 7px;
+
+            background: #d8b4fe;
+
+            border-radius: 50%;
+
+            box-shadow:
+                0 0 10px rgba(216, 180, 254, 0.85);
+
+            animation: pulse 1.8s infinite;
+        }
+
+
+        /* =====================================================
+           ZIGZAG CAMERA
+        ===================================================== */
+
+        .camera {
+            min-height: 530px;
+        }
+
+        .camera-screen {
+            min-height: 462px;
+
+            position: relative;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            overflow: hidden;
+
+            background: #0c0b0e;
+        }
+
+        /*
+            Zigzag pattern.
+
+            This creates the diagonal / chevron pattern
+            you liked in the original design.
+        */
+
+        .camera-screen::before {
+            content: "";
+
+            position: absolute;
+
+            inset: 0;
+
+            background-color: #111113;
+
+            background-image:
+                linear-gradient(
+                    135deg,
+                    #1b1b1d 25%,
+                    transparent 25%
+                ),
+                linear-gradient(
+                    225deg,
+                    #1b1b1d 25%,
+                    transparent 25%
+                ),
+                linear-gradient(
+                    45deg,
+                    #1b1b1d 25%,
+                    transparent 25%
+                ),
+                linear-gradient(
+                    315deg,
+                    #1b1b1d 25%,
+                    #111113 25%
+                );
+
+            background-position:
+                0 0,
+                0 0,
+                12px 0,
+                12px 0;
+
+            background-size:
+                24px 24px;
+
+            opacity: 0.9;
+        }
+
+        /*
+            Purple tint over camera pattern.
+        */
+
+        .camera-screen::after {
+            content: "";
+
+            position: absolute;
+
+            inset: 0;
+
+            background:
+                radial-gradient(
+                    circle at center,
+                    rgba(216, 180, 254, 0.035),
+                    transparent 55%
+                );
+
+            pointer-events: none;
+        }
+
+        /*
+            Subtle scanning line.
+        */
+
+        .camera-scan {
+            position: absolute;
+
+            left: 0;
+            right: 0;
+
+            top: -5%;
+
+            height: 2px;
+
+            background:
+                linear-gradient(
+                    90deg,
+                    transparent,
+                    rgba(216, 180, 254, 0.55),
+                    transparent
+                );
+
+            box-shadow:
+                0 0 15px
+                rgba(216, 180, 254, 0.30);
+
+            z-index: 2;
+
+            animation: scan 5s linear infinite;
+        }
+
+        @keyframes scan {
+
+            0% {
+                top: -5%;
+            }
+
+            100% {
+                top: 105%;
+            }
+        }
+
+        .camera-placeholder {
+            position: relative;
+
+            z-index: 3;
+
+            text-align: center;
+
+            color: #71677a;
+        }
+
+        .camera-icon {
+            width: 64px;
+            height: 46px;
+
+            margin:
+                0 auto
+                18px;
+
+            border:
+                2px solid
+                #625568;
+
+            border-radius: 9px;
+
+            position: relative;
+        }
+
+        .camera-icon::before {
+            content: "";
+
+            width: 18px;
+            height: 18px;
+
+            position: absolute;
+
+            top: 50%;
+            left: 50%;
+
+            transform:
+                translate(-50%, -50%);
+
+            border:
+                2px solid
+                #625568;
+
+            border-radius: 50%;
+        }
+
+        .camera-icon::after {
+            content: "";
+
+            position: absolute;
+
+            width: 15px;
+            height: 7px;
+
+            background: #625568;
+
+            top: -7px;
+            left: 10px;
+
+            border-radius:
+                4px 4px 0 0;
+        }
+
+        .camera-placeholder p {
+            font-family: "IBM Plex Mono", monospace;
+
+            font-size: 13px;
+
+            letter-spacing: 0.2px;
+        }
+
+
+        /* =====================================================
+           DETECTION PANEL
+        ===================================================== */
+
+        .detection {
+            padding-bottom: 25px;
+        }
+
+        .detection-content {
+            padding: 26px;
+        }
+
+        .detection-label {
+            margin-bottom: 13px;
+
+            color: #8e8197;
+
+            font-family: "IBM Plex Mono", monospace;
+
+            font-size: 11px;
+            font-weight: 500;
+
+            text-transform: uppercase;
+
+            letter-spacing: 1.4px;
+        }
+
+        .object {
+            margin-bottom: 18px;
+
+            padding: 23px;
+
+            background: #211823;
+
+            border:
+                1px solid
+                rgba(216, 180, 254, 0.10);
+
+            border-radius: 15px;
+        }
+
+        .object-name {
+            margin-bottom: 9px;
+
+            font-family: "Sora", sans-serif;
+
+            font-size: 21px;
+            font-weight: 600;
+        }
+
+        .confidence {
+            color: #85788d;
+
+            font-family: "IBM Plex Mono", monospace;
+
+            font-size: 12px;
+        }
+
+        .audio {
+            display: flex;
+            align-items: center;
+
+            gap: 12px;
+
+            padding: 16px 18px;
+
+            background:
+                linear-gradient(
+                    135deg,
+                    #28163a,
+                    #21122f
+                );
+
+            border:
+                1px solid
+                #5c3675;
+
+            border-radius: 12px;
+
+            color: #d8b4fe;
+
+            font-family: "Space Grotesk", sans-serif;
+
+            font-size: 13px;
+        }
+
+        .audio-icon {
+            width: 32px;
+            height: 32px;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            background: #3b2252;
+
+            border-radius: 9px;
+
+            font-size: 14px;
+        }
+
+
+        /* =====================================================
+           SECTIONS
+        ===================================================== */
+
+        .section {
+            max-width: 1250px;
+
+            margin: 0 auto;
+
+            padding:
+                95px 35px;
+        }
+
+        .section-heading {
+            margin-bottom: 38px;
+        }
+
+        .eyebrow {
+            margin-bottom: 12px;
+
+            color: #c39bea;
+
+            font-family: "IBM Plex Mono", monospace;
+
+            font-size: 11px;
+            font-weight: 500;
+
+            text-transform: uppercase;
+
+            letter-spacing: 1.7px;
+        }
+
+        .section h2 {
+            margin-bottom: 14px;
+
+            font-family: "Sora", sans-serif;
+
+            font-size: 38px;
+
+            letter-spacing: -1.4px;
+
+            font-weight: 600;
+        }
+
+        .section-description {
+            max-width: 650px;
+
+            color: #9d91a5;
+
+            font-size: 16px;
+
+            line-height: 1.75;
+        }
+
+
+        /* =====================================================
+           HISTORY
+        ===================================================== */
+
+        .history-list {
+            display: flex;
+            flex-direction: column;
+
+            gap: 12px;
+        }
+
+        .history-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+
+            padding: 20px 23px;
+
+            background: #17101c;
+
+            border:
+                1px solid
+                rgba(216, 180, 254, 0.10);
+
+            border-radius: 14px;
+
+            transition:
+                border-color 0.2s ease,
+                transform 0.2s ease;
+        }
+
+        .history-item:hover {
+            border-color:
+                rgba(216, 180, 254, 0.25);
+
+            transform: translateX(3px);
+        }
+
+        .history-left {
+            display: flex;
+            align-items: center;
+
+            gap: 15px;
+        }
+
+        .history-icon {
+            width: 42px;
+            height: 42px;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            background: #28163a;
+
+            border-radius: 11px;
+
+            color: #d8b4fe;
+        }
+
+        .history-name {
+            margin-bottom: 4px;
+
+            font-family: "Space Grotesk", sans-serif;
+
+            font-weight: 600;
+        }
+
+        .history-time {
+            color: #766b7d;
+
+            font-family: "IBM Plex Mono", monospace;
+
+            font-size: 11px;
+        }
+
+        .history-status {
+            color: #d8b4fe;
+
+            font-family: "IBM Plex Mono", monospace;
+
+            font-size: 11px;
+        }
+
+
+        /* =====================================================
+           HOW IT WORKS
+        ===================================================== */
+
+        .steps {
+            display: grid;
+
+            grid-template-columns:
+                repeat(4, 1fr);
+
+            gap: 18px;
+
+            margin-top: 35px;
+        }
+
+        .step {
+            padding: 27px;
+
+            background: #17101c;
+
+            border:
+                1px solid
+                rgba(216, 180, 254, 0.10);
+
+            border-radius: 16px;
+
+            transition:
+                border-color 0.2s ease,
+                transform 0.2s ease;
+        }
+
+        .step:hover {
+            border-color:
+                rgba(216, 180, 254, 0.28);
+
+            transform: translateY(-4px);
+        }
+
+        .step-number {
+            margin-bottom: 20px;
+
+            color: #d8b4fe;
+
+            font-family: "IBM Plex Mono", monospace;
+
+            font-size: 11px;
+            font-weight: 500;
+
+            letter-spacing: 0.8px;
+        }
+
+        .step h3 {
+            margin-bottom: 10px;
+
+            font-family: "Sora", sans-serif;
+
+            font-size: 18px;
+
+            font-weight: 600;
+        }
+
+        .step p {
+            color: #867a8e;
+
+            font-size: 14px;
+
+            line-height: 1.65;
+        }
+
+
+        /* =====================================================
+           FOOTER
+        ===================================================== */
+
+        footer {
+            padding:
+                38px 6vw;
+
+            border-top:
+                1px solid
+                rgba(216, 180, 254, 0.10);
+
+            color: #706575;
+
+            font-family: "IBM Plex Mono", monospace;
+
+            font-size: 11px;
+
+            text-align: center;
+
+            letter-spacing: 0.3px;
+        }
+
+
+        /* =====================================================
+           RESPONSIVE
+        ===================================================== */
+
+        @media (max-width: 900px) {
+
+            header {
+                padding: 0 25px;
+            }
+
+            nav {
+                gap: 18px;
+            }
+
+            .hero {
+                padding-top: 70px;
+            }
+
+            .dashboard {
+                grid-template-columns: 1fr;
+            }
+
+            .steps {
+                grid-template-columns:
+                    repeat(2, 1fr);
+            }
+        }
+
+
+        @media (max-width: 600px) {
+
+            header {
+                height: 70px;
+            }
+
+            .logo {
+                font-size: 20px;
+            }
+
+            .logo-mark {
+                width: 29px;
+                height: 29px;
+            }
+
+            nav {
+                gap: 12px;
+            }
+
+            nav a {
+                font-size: 12px;
+            }
+
+            .hero {
+                padding:
+                    60px 20px
+                    50px;
+            }
+
+            h1 {
+                font-size: 43px;
+                letter-spacing: -1.8px;
+            }
+
+            .subtitle {
+                font-size: 16px;
+                margin-bottom: 45px;
+            }
+
+            .camera-screen {
+                min-height: 350px;
+            }
+
+            .steps {
+                grid-template-columns: 1fr;
+            }
+
+            .section {
+                padding:
+                    70px 20px;
+            }
+        }
+
+    </style>
+</head>
+
+
+<body>
+
+    <!-- =====================================================
+         HEADER
+    ====================================================== -->
+
+    <header>
+
+        <div class="logo">
+
+            <div class="logo-mark"></div>
+
+            <span>SeeNARIO</span>
+
+        </div>
+
+
+        <nav>
+
+            <a href="#live">
+                Live Feed
+            </a>
+
+            <a href="#history">
+                History
+            </a>
+
+            <a href="#about">
+                About
+            </a>
+
+        </nav>
+
+    </header>
+
+
+
+    <!-- =====================================================
+         MAIN
+    ====================================================== -->
+
+    <main>
+
+
+        <!-- =================================================
+             LIVE FEED
+        ================================================== -->
+
+        <section
+            class="hero"
+            id="live"
+        >
+
+            <div class="status">
+
+                <div class="status-dot"></div>
+
+                SYSTEM ONLINE
+
+            </div>
+
+
+            <h1>
+
+                See the world.<br>
+
+                <span class="gradient-text">
+                    Hear what matters.
+                </span>
+
+                <br>
+
+                Navigate every scenario.
+
+            </h1>
+
+
+            <p class="subtitle">
+
+                SeeNARIO uses Gemini AI-powered vision
+                to detect obstacles and transform the
+                environment around you into real-time
+                audio guidance.
+
+            </p>
+
+
+
+            <!-- DASHBOARD -->
+
+            <div class="dashboard">
+
+
+                <!-- CAMERA -->
+
+                <div class="card camera">
+
+                    <div class="card-header">
+
+                        <div class="card-title">
+                            Live Camera
+                        </div>
+
+
+                        <div class="live-indicator">
+
+                            <div class="live-dot"></div>
+
+                            LIVE
+
+                        </div>
+
+                    </div>
+
+
+                    <div class="camera-screen">
+
+                        <div class="camera-scan"></div>
+
+
+                        <div class="camera-placeholder">
+
+                            <div class="camera-icon"></div>
+
+                            <p>
+                                Camera feed will appear here
+                            </p>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+
+
+                <!-- DETECTION -->
+
+                <div class="card detection">
+
+                    <div class="card-header">
+
+                        <div class="card-title">
+                            Current Detection
+                        </div>
+
+                    </div>
+
+
+                    <div class="detection-content">
+
+                        <div class="detection-label">
+                            Latest Result
+                        </div>
+
+
+                        <div class="object">
+
+                            <div class="object-name">
+                                No Detection
+                            </div>
+
+                            <div class="confidence">
+                                Waiting for camera...
+                            </div>
+
+                        </div>
+
+
+                        <div class="audio">
+
+                            <div class="audio-icon">
+                                🔊
+                            </div>
+
+                            <span>
+                                Audio guidance ready
+                            </span>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+
+        <!-- =================================================
+             HISTORY
+        ================================================== -->
+
+        <section
+            class="section"
+            id="history"
+        >
+
+            <div class="section-heading">
+
+                <div class="eyebrow">
+                    Detection Log
+                </div>
+
+
+                <h2>
+                    Recent activity
+                </h2>
+
+
+                <p class="section-description">
+
+                    SeeNARIO keeps track of recent
+                    detections so you can review what
+                    the system has encountered.
+
+                </p>
+
+            </div>
+
+
+
+            <div class="history-list">
+
+
+                <div class="history-item">
+
+                    <div class="history-left">
+
+                        <div class="history-icon">
+                            ◉
+                        </div>
+
+
+                        <div>
+
+                            <div class="history-name">
+                                No detections yet
+                            </div>
+
+                            <div class="history-time">
+                                Waiting for camera data
+                            </div>
+
+                        </div>
+
+                    </div>
+
+
+                    <div class="history-status">
+                        READY
+                    </div>
+
+                </div>
+
+
+            </div>
+
+        </section>
+
+
+
+        <!-- =================================================
+             ABOUT / HOW IT WORKS
+        ================================================== -->
+
+        <section
+            class="section"
+            id="about"
+        >
+
+            <div class="section-heading">
+
+                <div class="eyebrow">
+                    How It Works
+                </div>
+
+
+                <h2>
+                    From vision to guidance.
+                </h2>
+
+
+                <p class="section-description">
+
+                    SeeNARIO combines computer vision,
+                    artificial intelligence, and audio
+                    feedback to help users understand
+                    what's happening around them.
+
+                </p>
+
+            </div>
+
+
+
+            <div class="steps">
+
+
+                <!-- STEP 1 -->
+
+                <div class="step">
+
+                    <div class="step-number">
+                        01 — CAPTURE
+                    </div>
+
+                    <h3>
+                        See
+                    </h3>
+
+                    <p>
+                        A camera captures the environment
+                        directly in front of the user.
+                    </p>
+
+                </div>
+
+
+
+                <!-- STEP 2 -->
+
+                <div class="step">
+
+                    <div class="step-number">
+                        02 — ANALYZE
+                    </div>
+
+                    <h3>
+                        Understand
+                    </h3>
+
+                    <p>
+                        Gemini AI analyzes the scene and
+                        identifies potential obstacles.
+                    </p>
+
+                </div>
+
+
+
+                <!-- STEP 3 -->
+
+                <div class="step">
+
+                    <div class="step-number">
+                        03 — RESPOND
+                    </div>
+
+                    <h3>
+                        Speak
+                    </h3>
+
+                    <p>
+                        Important information is converted
+                        into concise audio guidance.
+                    </p>
+
+                </div>
+
+
+
+                <!-- STEP 4 -->
+
+                <div class="step">
+
+                    <div class="step-number">
+                        04 — NAVIGATE
+                    </div>
+
+                    <h3>
+                        Move
+                    </h3>
+
+                    <p>
+                        The user receives immediate
+                        information to better understand
+                        their surroundings.
+                    </p>
+
+                </div>
+
+
+            </div>
+
+        </section>
+
+    </main>
+
+
+
+    <!-- =====================================================
+         FOOTER
+    ====================================================== -->
+
+    <footer>
+
+        SeeNARIO · Intelligent Vision Assistance
+
+    </footer>
+
+
+</body>
+</html>
