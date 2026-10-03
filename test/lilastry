@@ -1,15 +1,17 @@
-import os
 import time
 import cv2
+import numpy as np
 from google import genai
 from google.genai import errors
 from PIL import Image
 
-# Needs GEMINI_API_KEY (or GOOGLE_API_KEY) set in your environment
 client = genai.Client()
 
-MODEL = "gemini-3.6-flash"   # or "gemini-flash-latest" to always get the newest Flash
-INTERVAL_SECONDS = 3
+MODEL = "gemini-3.6-flash"      # try a Flash-Lite model if you need more quota headroom
+MIN_INTERVAL = 3.0              # never call more often than this (seconds)
+HEARTBEAT = 20.0                # call at least this often even if the scene looks unchanged
+CHANGE_THRESHOLD = 8.0          # mean pixel difference (0-255) that counts as "scene changed"
+MAX_SIDE = 512                  # downscale frames before sending (fewer image tokens)
 
 PROMPT = (
     "Analyze the image and identify the single most important obstacle directly in front of the camera. "
@@ -22,55 +24,70 @@ PROMPT = (
 )
 
 
+def shrink(frame):
+    h, w = frame.shape[:2]
+    scale = MAX_SIDE / max(h, w)
+    return cv2.resize(frame, (int(w * scale), int(h * scale))) if scale < 1 else frame
+
+
+def scene_changed(prev_gray, gray):
+    if prev_gray is None:
+        return True
+    return float(np.mean(cv2.absdiff(prev_gray, gray))) > CHANGE_THRESHOLD
+
+
 def analyze(image):
-    """Send one frame to Gemini; return (object, position, danger) or None."""
-    for attempt in range(3):
-        try:
-            response = client.models.generate_content(model=MODEL, contents=[image, PROMPT])
-            raw = (response.text or "").strip()
-            parts = [p.strip() for p in raw.split("|")]
-            if len(parts) != 3:
-                print(f"⚠️ Unexpected format: {raw!r}")
-                return None
-            return tuple(parts)
-        except errors.ServerError:
-            print(f"Server busy, retrying... ({attempt + 1}/3)")
-            time.sleep(2)
-        except errors.ClientError as e:
-            # 404 = bad model name, 400/403 = bad API key, 429 = rate limit
-            print(f"❌ API error: {e}")
-            return None
-    return None
+    """Returns ((obj, pos, danger) or None, seconds_to_wait_before_next_call)."""
+    try:
+        response = client.models.generate_content(model=MODEL, contents=[image, PROMPT])
+        parts = [p.strip() for p in (response.text or "").split("|")]
+        return (tuple(parts) if len(parts) == 3 else None), 0
+    except errors.ClientError as e:
+        if getattr(e, "code", None) == 429:
+            print("⏳ Rate limited. Backing off for 30s.")
+            return None, 30
+        print(f"❌ API error: {e}")
+        return None, 10
+    except errors.ServerError:
+        print("Server busy, backing off for 10s.")
+        return None, 10
 
 
 def main():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("❌ Could not open webcam. Is another app using it?")
+        print("❌ Could not open webcam.")
         return
 
-    # Let auto-exposure settle; the first frames are often black
-    for _ in range(10):
+    for _ in range(10):  # warm-up
         cap.read()
 
-    print(f"Running every {INTERVAL_SECONDS}s. Press Ctrl+C to stop.")
+    prev_gray, last_call, cooldown = None, 0.0, 0.0
+    print("Running. Ctrl+C to stop.")
     try:
         while True:
-            start = time.time()
             ret, frame = cap.read()
             if not ret:
                 print("❌ Failed to grab frame.")
                 break
 
-            # OpenCV is BGR, PIL expects RGB. No file needed.
-            image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            now = time.time()
+            small = shrink(frame)
+            gray = cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), (21, 21), 0)
 
-            result = analyze(image)
-            if result:
-                obj, pos, danger = result
-                print(f"🎯 {obj} | {pos} | DANGER: {danger}")
+            ready = now - last_call >= MIN_INTERVAL + cooldown
+            due = scene_changed(prev_gray, gray) or (now - last_call >= HEARTBEAT)
 
-            time.sleep(max(0, INTERVAL_SECONDS - (time.time() - start)))
+            if ready and due:
+                image = Image.fromarray(cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
+                result, cooldown = analyze(image)
+                last_call = time.time()
+                prev_gray = gray
+                if result:
+                    obj, pos, danger = result
+                    print(f"🎯 {obj} | {pos} | DANGER: {danger}")
+
+            time.sleep(0.2)  # don't spin the CPU between frames
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
