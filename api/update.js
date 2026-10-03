@@ -3,8 +3,12 @@ const TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TO
 
 module.exports = async (req, res) => {
   if (req.method !== "POST") return res.status(405).end();
-  if (!process.env.PI_SECRET || req.headers["x-api-key"] !== process.env.PI_SECRET) {
-    return res.status(401).json({ error: "bad key" });
+  const secret = process.env.PI_SECRET;
+  if (!secret) {
+    return res.status(401).json({ error: "PI_SECRET is NOT set on this deployment" });
+  }
+  if (req.headers["x-api-key"] !== secret) {
+    return res.status(401).json({ error: "bad key", serverSecretLength: secret.length, sentLength: String(req.headers["x-api-key"] || "").length });
   }
   const { rows, image } = req.body || {};
   if (!Array.isArray(rows)) return res.status(400).json({ error: "missing rows" });
