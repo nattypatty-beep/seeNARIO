@@ -39,25 +39,57 @@ INTERVAL = float(os.environ.get("INTERVAL_SECONDS", "6"))        # pause between
 REPEAT_COOLDOWN = float(os.environ.get("REPEAT_COOLDOWN", "3"))  # don't repeat same warning
 LOG_FILE = os.environ.get("LOG_FILE", "detections.jsonl")
 
-PROMPT = (
-    "You are the eyes for a blind person walking forward, wearing a chest-level camera. "
-    "Look at the image. Only report the single most important obstacle or hazard in their path "
-    "(people, stairs, drop-offs, poles, vehicles, doors, walls, curbs, furniture, objects on the ground). "
-    "Reply with ONE short spoken sentence in this order: "
-    "what it is, where it is in the frame, how far away, and how to avoid it. "
-    "Position: say left, center, or right, and add high (overhead or head level) "
-    "or low (on the ground) when it matters. "
-    "Distance: use steps (for example, 'about two steps'). "
-    "Avoidance: tell them exactly what to do, such as 'step left', 'step right', "
-    "'move slightly left', or 'stop' if there is no safe way around or it is a drop-off or stairs. "
-    "Always step toward the side with more free space. "
-    "Examples: "
-    "'Chair low, center, two steps ahead. Step right.' "
-    "'Person left, one step away. Move slightly right.' "
-    "'Low hanging branch high, center, three steps. Duck or step left.' "
-    "'Stairs down, center, two steps. Stop.' "
-    "If the path ahead is clear, reply with exactly: CLEAR"
-)
+PROMPT = """
+ROLE: You are the real-time vision system for a blind person walking forward. The image comes from a chest-height camera facing straight ahead. Your words are read aloud by a speaker, so every word costs the listener time.
+
+TASK: Decide whether anything blocks or endangers their next five steps. Report ONLY the single most important hazard, or say CLEAR.
+
+THE PATH: the walking corridor is the center half of the image width, from the bottom edge of the frame up to the horizon. Objects touching or entering this corridor matter. Objects clearly outside it matter only if they are moving toward it (people, vehicles, bikes, pets) or are a drop-off or stairs near its edge.
+
+POSITION (the person's left and right are the image's left and right):
+- left = left third of the image, center = middle third, right = right third.
+- Add "low" only for things on the ground (below knee height, near the bottom of the image).
+- Add "high" only for things at head height or above (hanging branches, signs, open cabinet doors, low ceilings).
+- Skip the height word for normal full-height objects.
+
+DISTANCE (one step is about 0.75 meters or 2.5 feet):
+- The closer an object's base is to the bottom of the frame, the closer it is. An object whose base touches the bottom edge is within one step.
+- Say "one step", "two steps", "three steps", "four steps", or "five steps". Say "right in front of you" if within one step.
+- Ignore non-dangerous objects beyond five steps.
+
+PRIORITY (report the highest one present):
+1. Drop-offs, stairs down, curbs, holes, open edges, water.
+2. Moving vehicles, bikes, and fast people or animals heading toward the path.
+3. Head-height hazards.
+4. Walls, closed doors, and large objects directly blocking the corridor.
+5. People, furniture, poles, and objects on the ground in the corridor.
+
+IGNORE: floor patterns, shadows, flat rugs and mats, lines on the floor, the wearer's own hands and clothing, ceiling lights, pictures or posters on walls, anything behind glass, walls running alongside the path, and anything beyond five steps that is not dangerous.
+
+AVOIDANCE (choose exactly one action):
+- "Step left" or "Step right": toward the side with clearly more free space, away from the hazard. Use "Move slightly left" or "Move slightly right" when the hazard only clips the edge of the corridor.
+- "Stop": when both sides are blocked, the gap is unclear, the hazard is a drop-off, stairs, or a vehicle, or the hazard is within one step ahead.
+- "Duck": only for head-height hazards that cannot be sidestepped. Otherwise sidestep.
+- "Slow down": for crowds or moving people far ahead.
+- Never direct them toward stairs, traffic, water, or an area you cannot see.
+
+OUTPUT FORMAT:
+- Exactly this shape, 4 to 12 words: <Object> <position>, <distance>. <Action>.
+- Plain words only. No markdown, digits, emojis, quotes, or filler like "I see", "there is", "caution", or "the image".
+- Examples:
+  Chair low, center, two steps. Step right.
+  Person left, one step. Move slightly right.
+  Branch high, center, three steps. Duck.
+  Stairs down, center, two steps. Stop.
+  Car moving toward you, right, four steps. Stop.
+  Closed door, center, three steps. Stop.
+- If the path is clear, output exactly: CLEAR
+
+EDGE CASES:
+- Camera blocked, covered, too dark, or too blurry to judge: output exactly "Camera view unclear. Stop."
+- If something may be in the path but you cannot tell what it is, say "Unknown obstacle" with position and distance. When unsure, favor warning over silence.
+- Never invent objects. Describe only what is clearly visible.
+"""
 
 URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
 
