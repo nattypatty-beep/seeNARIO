@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BLE explorer</title>
+<style>body{font-family:system-ui,sans-serif;max-width:720px;margin:24px auto;padding:0 16px;background:#14101a;color:#eee}
+input,button{font-size:16px;padding:10px;margin:6px 0;width:100%;box-sizing:border-box}
+pre{background:#0c0910;padding:12px;border-radius:8px;white-space:pre-wrap;word-break:break-all;max-height:60vh;overflow:auto}small{color:#aaa}</style></head>
+<body>
+<h2>BLE explorer</h2>
+<small>Chrome/Edge over HTTPS only. Enter the service UUIDs you saw in nRF Connect (comma-separated, full 128-bit form or a 16-bit hex like 0x180f). Web Bluetooth can only open services you list here.</small>
+<input id="uuids" placeholder="service UUIDs, comma-separated">
+<button id="go">Pick a device and connect</button>
+<button id="copy">Copy log</button>
+<pre id="log">Waiting…</pre>
+<script>
+const $ = (id) => document.getElementById(id), log = $("log");
+let lines = [];
+const out = (s) => { lines.push(s); log.textContent = lines.slice(-400).join("\n"); log.scrollTop = log.scrollHeight; };
+const norm = (u) => (/^0x[0-9a-f]+$/i.test(u) ? parseInt(u, 16) : u.toLowerCase());
+const hex = (dv) => [...new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength)].map((b) => b.toString(16).padStart(2, "0")).join(" ");
+$("copy").onclick = () => navigator.clipboard.writeText(lines.join("\n"));
+$("go").onclick = async () => {
+  try {
+    if (!navigator.bluetooth) throw new Error("Web Bluetooth not available (use Chrome/Edge over HTTPS)");
+    const services = $("uuids").value.split(",").map((s) => s.trim()).filter(Boolean).map(norm);
+    const dev = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: services });
+    out("Device: " + (dev.name || "(unnamed)"));
+    const server = await dev.gatt.connect();
+    const svcs = await server.getPrimaryServices();
+    if (!svcs.length) out("Connected, but no services were accessible. Check the UUIDs you entered.");
+    for (const s of svcs) {
+      out("SERVICE " + s.uuid);
+      for (const c of await s.getCharacteristics()) {
+        const p = Object.keys(c.properties).filter((k) => c.properties[k]).join(",");
+        out("  CHAR " + c.uuid + "  [" + p + "]");
+        if (c.properties.notify) {
+          await c.startNotifications();
+          c.addEventListener("characteristicvaluechanged", (e) =>
+            out(`${new Date().toISOString().slice(11, 23)} ${c.uuid.slice(0, 8)}: ${hex(e.target.value)}`));
+        }
+      }
+    }
+    out("Listening for notifications. Move the board and watch which characteristic changes.");
+  } catch (e) { out("Error: " + e.message); }
+};
+</script></body></html>
