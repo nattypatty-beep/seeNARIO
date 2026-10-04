@@ -19,7 +19,8 @@ RUN:
     python seenario_pi.py           # run the assistant (Ctrl+C to stop)
 
 OPTIONAL SETTINGS (environment variables):
-    GEMINI_MODEL, INTERVAL_SECONDS, REPEAT_COOLDOWN, CAMERA_INDEX, LOG_FILE
+    GEMINI_MODEL, INTERVAL_SECONDS, REPEAT_COOLDOWN, CAMERA_INDEX, LOG_FILE, DEBUG
+    (set DEBUG=1 to print Gemini's raw hazard list)
 """
 import base64
 import json
@@ -38,6 +39,8 @@ CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", "0"))
 INTERVAL = float(os.environ.get("INTERVAL_SECONDS", "6"))        # pause between checks
 REPEAT_COOLDOWN = float(os.environ.get("REPEAT_COOLDOWN", "3"))  # don't repeat same warning
 LOG_FILE = os.environ.get("LOG_FILE", "detections.jsonl")
+DEBUG = os.environ.get("DEBUG") == "1"
+
 PROMPT = """
 You are the eyes of a blind person who is walking forward. The photo comes from a camera worn at chest height, facing straight ahead and tilted slightly down.
 
@@ -67,6 +70,36 @@ Floor patterns, shadows, flat rugs, lines on the floor, the wearer's own hands, 
 RULES
 Never invent objects. If nothing blocks the path, return an empty hazards list.
 """
+
+SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "image_ok": {"type": "BOOLEAN"},
+        "free_side": {"type": "STRING", "enum": ["left", "right", "both", "none"]},
+        "hazards": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "label": {"type": "STRING"},
+                    "kind": {"type": "STRING",
+                             "enum": ["drop", "vehicle", "head", "wall", "person", "object"]},
+                    "height": {"type": "STRING", "enum": ["low", "normal", "high"]},
+                    "box": {"type": "ARRAY", "items": {"type": "INTEGER"}},
+                    "on_floor": {"type": "BOOLEAN"},
+                    "steps_guess": {"type": "INTEGER"},
+                },
+                "required": ["label", "kind", "height", "box", "on_floor", "steps_guess"],
+            },
+        },
+    },
+    "required": ["image_ok", "free_side", "hazards"],
+}
+
+STEP_WORDS = {1: "one step", 2: "two steps", 3: "three steps", 4: "four steps",
+              5: "five steps", 6: "six steps", 7: "seven steps", 8: "eight steps"}
+KIND_ORDER = {"drop": 0, "vehicle": 1, "head": 2, "wall": 3, "person": 4, "object": 5}
+
 URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
 
 
@@ -79,6 +112,57 @@ def speak(text: str) -> None:
         engine.setProperty("rate", 160)
         engine.say(text)
         engine.runAndWait()
+
+
+def build_message(data: dict) -> str:
+    """Turn Gemini's hazard list into one short spoken sentence (or CLEAR)."""
+    if not data.get("image_ok", True):
+        return "Camera view unclear. Move slowly."
+
+    # Keep hazards that overlap the walking corridor (middle half), plus drops/vehicles
+    hazards = []
+    for h in data.get("hazards", []):
+        try:
+            ymin, xmin, ymax, xmax = h["box"]
+        except (KeyError, ValueError):
+            continue
+        if (xmax > 250 and xmin < 750) or h.get("kind") in ("drop", "vehicle"):
+            hazards.append(h)
+    if not hazards:
+        return "CLEAR"
+
+    # Most important hazard: by type first, then nearest
+    h = min(hazards, key=lambda x: (KIND_ORDER.get(x.get("kind"), 5), x.get("steps_guess", 8)))
+    ymin, xmin, ymax, xmax = h["box"]
+    cx = (xmin + xmax) / 2
+    pos = "left" if cx < 333 else "right" if cx > 667 else "center"
+    steps = STEP_WORDS.get(h.get("steps_guess"), "a few steps")
+    label = h.get("label", "obstacle")
+    if h.get("height") in ("low", "high"):
+        label += f" {h['height']}"
+
+    # Which way to go
+    free = data.get("free_side", "none")
+    if free in ("left", "right"):
+        side = free
+    elif free == "both":
+        side = "right" if cx < 500 else "left"  # away from the hazard
+    else:
+        side = None
+
+    kind = h.get("kind")
+    if side is None:
+        action = "Duck" if kind == "head" else "Step back and turn around"
+    elif kind == "drop":
+        action = f"Step back, then go {side}"
+    elif pos == "left" and side == "right":
+        action = "Move slightly right"
+    elif pos == "right" and side == "left":
+        action = "Move slightly left"
+    else:
+        action = f"Step {side}"
+
+    return f"{label.capitalize()}, {pos}, {steps}. {action}."
 
 
 def grab_frame(cap) -> bytes:
@@ -107,7 +191,11 @@ def ask_gemini(jpeg: bytes) -> str:
                 }},
             ]
         }],
-        "generationConfig": {"temperature": 0.2},
+        "generationConfig": {
+            "temperature": 0.1,
+            "responseMimeType": "application/json",
+            "responseSchema": SCHEMA,
+        },
     }
     r = requests.post(
         URL,
@@ -116,8 +204,11 @@ def ask_gemini(jpeg: bytes) -> str:
         timeout=20,
     )
     r.raise_for_status()
-    data = r.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    data = json.loads(text)
+    if DEBUG:
+        print("RAW:", json.dumps(data))
+    return build_message(data)
 
 
 def log(result: str) -> None:
