@@ -139,6 +139,17 @@ URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generate
 
 # ---------------------------------------------------------------- speech
 
+def speak_espeak(text: str) -> None:
+    if sys.platform.startswith("linux"):  # Raspberry Pi
+        subprocess.run(["espeak-ng", "-s", "150", text], check=False)
+    else:  # Windows / Mac laptop
+        import pyttsx3
+        engine = pyttsx3.init()
+        engine.setProperty("rate", 160)
+        engine.say(text)
+        engine.runAndWait()
+
+
 def play_pcm(pcm: bytes) -> None:
     """Play raw 24 kHz 16-bit mono audio on Linux (aplay), Windows (winsound) or Mac (afplay)."""
     if sys.platform.startswith("linux"):
@@ -184,22 +195,6 @@ def speak(text: str) -> None:
             if r.status_code != 200:
                 raise RuntimeError(f"HTTP {r.status_code} {r.text[:200]}")
             play_pcm(r.content)
-            return
-        except Exception as e:
-            print(f"ElevenLabs failed ({e}); using espeak instead")
-    speak_espeak(text)
-
-
-def speak(text: str) -> None:
-    if ELEVEN_KEY and sys.platform.startswith("linux") and shutil.which("aplay"):
-        try:
-            r = requests.post(
-                f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}?output_format=pcm_24000",
-                headers={"xi-api-key": ELEVEN_KEY, "Content-Type": "application/json"},
-                json={"text": text, "model_id": "eleven_flash_v2_5"}, timeout=15)
-            r.raise_for_status()
-            subprocess.run(["aplay", "-q", "-t", "raw", "-f", "S16_LE", "-r", "24000", "-c", "1"],
-                           input=r.content, check=False)
             return
         except Exception as e:
             print(f"ElevenLabs failed ({e}); using espeak instead")
@@ -366,7 +361,7 @@ def log(result: str) -> None:
 # ---------------------------------------------------------------- main
 
 def main() -> None:
-        print("Voice:", "ElevenLabs" if eleven_ready() else "espeak (no ElevenLabs key or no audio player)")
+    print("Voice:", "ElevenLabs" if eleven_ready() else "espeak (no ElevenLabs key or no audio player)")
 
     if "--test" in sys.argv:
         speak("SeeNARIO speaker test. If you can hear this, audio is working.")
