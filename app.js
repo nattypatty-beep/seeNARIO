@@ -92,10 +92,16 @@
         const a = e.accelerationIncludingGravity;
         if (a && a.x != null) latest = { x: a.x / 9.80665, y: a.y / 9.80665, z: a.z / 9.80665 };
       });
-      setInterval(() => { // exactly 50 Hz, 1 s windows, 50% overlap (matches train.py)
+      let next = performance.now();
+      setInterval(() => { // clock-based 50 Hz slots, 1 s windows, 50% overlap (matches train.py)
         if (!latest) return;
-        buf.push(latest); if (buf.length > 50) buf.shift();
-        if (buf.length === 50 && ++n % 25 === 0) setMotion(classifyMotion(buf));
+        const now = performance.now();
+        if (now - next > 1000) next = now; // resync after a long pause
+        while (next <= now) {
+          next += 20;
+          buf.push(latest); if (buf.length > 50) buf.shift();
+          if (buf.length === 50 && ++n % 25 === 0) setMotion(classifyMotion(buf));
+        }
       }, 20);
       motionLabel.textContent = "Wearable: phone sensors on";
     } catch (err) {
