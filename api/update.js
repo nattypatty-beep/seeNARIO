@@ -1,7 +1,7 @@
 const URL_ = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
 const TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
 
-const ALLOWED_KEYS = [process.env.PI_SECRET, "seenarioPi2026xk4m"].filter(Boolean);
+const ALLOWED_KEYS = [process.env.PI_SECRET].filter(Boolean); // set PI_SECRET in Vercel
 
 module.exports = async (req, res) => {
   if (req.method !== "POST") return res.status(405).end();
