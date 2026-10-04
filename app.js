@@ -37,7 +37,7 @@
   bar.innerHTML =
     '<span class="motion-label">Wearable: not connected</span>' +
     '<button data-a="ble">Connect SensorTile.box</button>' +
-    '<button data-a="0">Sim: standing</button><button data-a="1">Sim: walking</button><button data-a="2">Sim: stumble</button>';
+    '<button data-a="phone">Use phone sensors</button><button data-a="0">Sim: standing</button><button data-a="1">Sim: walking</button><button data-a="2">Sim: stumble</button>';
   screen.parentNode.insertBefore(bar, screen.nextSibling);
   const motionLabel = bar.querySelector(".motion-label");
 
@@ -46,6 +46,7 @@
   }
 
   function setMotion(state) {
+    if (state === motion) return; // only react to changes
     motion = state;
     motionLabel.textContent = "Wearable: " + state;
     if (state === "stumble") {
@@ -73,9 +74,39 @@
     }
   }
 
+  // Edge inference on the phone's own motion sensor, using the model exported by train.py (model.js).
+  async function startPhone() {
+    try {
+      if (typeof classifyMotion !== "function") {
+        await new Promise((ok, no) => {
+          const sc = document.createElement("script");
+          sc.src = "model.js"; sc.onload = ok; sc.onerror = () => no(new Error("model.js not found. Train first."));
+          document.head.appendChild(sc);
+        });
+      }
+      if (typeof DeviceMotionEvent !== "undefined" && DeviceMotionEvent.requestPermission) {
+        if ((await DeviceMotionEvent.requestPermission()) !== "granted") throw new Error("permission denied");
+      }
+      let latest = null; const buf = []; let n = 0;
+      addEventListener("devicemotion", (e) => {
+        const a = e.accelerationIncludingGravity;
+        if (a && a.x != null) latest = { x: a.x / 9.80665, y: a.y / 9.80665, z: a.z / 9.80665 };
+      });
+      setInterval(() => { // exactly 50 Hz, 1 s windows, 50% overlap (matches train.py)
+        if (!latest) return;
+        buf.push(latest); if (buf.length > 50) buf.shift();
+        if (buf.length === 50 && ++n % 25 === 0) setMotion(classifyMotion(buf));
+      }, 20);
+      motionLabel.textContent = "Wearable: phone sensors on";
+    } catch (err) {
+      motionLabel.textContent = "Phone mode failed (" + err.message + ")";
+    }
+  }
+
   bar.addEventListener("click", (e) => {
     const a = e.target.dataset && e.target.dataset.a;
     if (a === "ble") connectBox();
+    else if (a === "phone") startPhone();
     else if (a in BOX_STATES) setMotion(BOX_STATES[a]);
   });
 
