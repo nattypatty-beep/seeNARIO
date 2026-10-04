@@ -117,8 +117,7 @@ Optional environment variables:
 
 ## Credits
 
-**Team:** [your names here]
-**Course:** [course name, instructor, semester]
+**Team:** SeeNARIO
 
 **AI assistance:** Most of the code in this project was written with AI assistance:
 - **Claude** (Anthropic) wrote most of the Raspberry Pi program (`pi/seenario_pi.py`), including the camera loop, the hazard-to-guidance logic, distance calculation, speech handling, and the setup instructions.
