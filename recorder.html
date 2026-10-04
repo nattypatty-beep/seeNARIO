@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SeeNARIO motion recorder</title>
+<style>body{font-family:system-ui,sans-serif;max-width:480px;margin:24px auto;padding:0 16px;background:#14101a;color:#eee}
+button,select{font-size:18px;padding:12px;margin:6px 0;width:100%}#s{margin:12px 0;font-size:18px}small{color:#aaa}</style></head>
+<body>
+<h2>Motion recorder</h2>
+<small>Open on your phone over HTTPS (your Vercel site: /recorder.html). Wear the phone in the same spot every time (belt or pocket, same orientation). Each recording downloads a CSV named like <code>walking_01.csv</code>; put them in <code>ml/data/</code>.</small>
+<select id="label"><option>standing</option><option>walking</option><option>stumble</option></select>
+<button id="go">Start (5 s countdown, then 60 s)</button>
+<div id="s">Idle</div>
+<small>Stumble = a safe stagger or sudden stop every 1–2 seconds for the whole recording, on flat ground.</small>
+<script>
+const RATE = 50, SECONDS = 60, G = 9.80665;
+let last = null, counts = {};
+const $ = (id) => document.getElementById(id);
+addEventListener("devicemotion", (e) => {
+  const a = e.accelerationIncludingGravity;
+  if (a && a.x != null) last = { x: a.x / G, y: a.y / G, z: a.z / G };
+});
+$("go").onclick = async () => {
+  if (typeof DeviceMotionEvent !== "undefined" && DeviceMotionEvent.requestPermission) {
+    if ((await DeviceMotionEvent.requestPermission()) !== "granted") return ($("s").textContent = "Motion permission denied");
+  }
+  const label = $("label").value;
+  for (let i = 5; i > 0; i--) { $("s").textContent = "Get ready… " + i; await new Promise((r) => setTimeout(r, 1000)); }
+  if (!last) return ($("s").textContent = "No sensor data. Use a phone over HTTPS.");
+  const rows = ["ax,ay,az"];
+  const t0 = performance.now();
+  await new Promise((done) => {
+    const id = setInterval(() => { // sample-and-hold at exactly 50 Hz, same as the live app
+      rows.push(`${last.x.toFixed(4)},${last.y.toFixed(4)},${last.z.toFixed(4)}`);
+      const el = (performance.now() - t0) / 1000;
+      $("s").textContent = `Recording ${label}… ${el.toFixed(0)}/${SECONDS}s`;
+      if (rows.length > RATE * SECONDS) { clearInterval(id); done(); }
+    }, 1000 / RATE);
+  });
+  counts[label] = (counts[label] || 0) + 1;
+  const name = `${label}_${String(counts[label]).padStart(2, "0")}.csv`;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([rows.join("\n")], { type: "text/csv" }));
+  a.download = name; a.click();
+  $("s").textContent = `Saved ${name}. Record the next one.`;
+};
+</script></body></html>
