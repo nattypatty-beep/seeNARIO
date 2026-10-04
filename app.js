@@ -87,7 +87,7 @@
       if (typeof DeviceMotionEvent !== "undefined" && DeviceMotionEvent.requestPermission) {
         if ((await DeviceMotionEvent.requestPermission()) !== "granted") throw new Error("permission denied");
       }
-      let latest = null; const buf = []; let n = 0;
+      let latest = null; const buf = []; let n = 0, strikes = 0;
       addEventListener("devicemotion", (e) => {
         const a = e.accelerationIncludingGravity;
         if (a && a.x != null) latest = { x: a.x / 9.80665, y: a.y / 9.80665, z: a.z / 9.80665 };
@@ -100,7 +100,11 @@
         while (next <= now) {
           next += 20;
           buf.push(latest); if (buf.length > 50) buf.shift();
-          if (buf.length === 50 && ++n % 25 === 0) setMotion(classifyMotion(buf));
+          if (buf.length === 50 && ++n % 25 === 0) {
+            const c = classifyMotion(buf); // a stumble must show in 2 windows in a row, to cut false alarms
+            if (c === "stumble") { if (++strikes >= 2) setMotion("stumble"); }
+            else { strikes = 0; setMotion(c); }
+          }
         }
       }, 20);
       motionLabel.textContent = "Wearable: phone sensors on";
