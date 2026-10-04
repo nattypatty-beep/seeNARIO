@@ -83,7 +83,7 @@ DEBUG = os.environ.get("DEBUG") == "1"
 
 # ---- website
 SITE_URL = os.environ.get("SITE_URL", "https://seenario-phi.vercel.app").rstrip("/")
-PI_SECRET = os.environ.get("PI_SECRET", "seenarioPi2026xk4m")
+PI_SECRET = os.environ.get("PI_SECRET", "")  # set PI_SECRET in keys.txt (must match Vercel)
 UPLOAD_TO_SITE = os.environ.get("UPLOAD_TO_SITE", "1") == "1"
 UPLOAD_EVERY = float(os.environ.get("UPLOAD_EVERY", "3"))  # seconds between website updates
 
