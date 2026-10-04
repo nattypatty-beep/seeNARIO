@@ -116,11 +116,19 @@
   }, 500);
 
   setInterval(() => {
+    if (connectedAt && Date.now() - lastBoard > 8000 && Date.now() - connectedAt > 8000 && state === "unknown" && dev && dev.gatt.connected) {
+      label.textContent = "connected, but the board is silent. Make sure its app is running (see Details)";
+      bar.querySelector("details").open = true;
+    }
+  }, 1000);
+  setInterval(() => {
     const rows = Object.entries(seen).map(([u, r]) => `${u.slice(0, 8)}… ${r.kind || "ignored"}: ${r.n} packets, last ${r.last}`);
-    info.innerHTML = rows.length ? rows.join("<br>") : "Not connected.";
+    const silent = connectedAt && !Object.values(seen).some((r) => r.n > 0);
+    info.innerHTML = (rows.length ? rows.join("<br>") : "Not connected.") +
+      (silent ? "<br><br><b>No packets have arrived.</b> The board is connected but not sending. Usual causes: the ST phone app is still connected to the board (close it completely), the board's app was not started with Play, or the board needs a power cycle." : "");
   }, 1000);
 
-  let dev = null, retry = 0;
+  let dev = null, retry = 0, connectedAt = 0;
   async function attach() {
     label.textContent = "connecting…";
     const server = await dev.gatt.connect();
@@ -132,12 +140,17 @@
           await c.startNotifications();
           c.addEventListener("characteristicvaluechanged", (e) => onPacket(c.uuid, e.target.value));
           n++;
-        } catch (e) {}
+          const rec = (seen[c.uuid] = seen[c.uuid] || { n: 0 });
+          rec.kind = rec.kind || "subscribed, no packets yet"; rec.service = s.uuid.slice(0, 8);
+          if (c.properties.read) { try { onPacket(c.uuid, await c.readValue()); } catch (e) {} }
+        } catch (e) {
+          seen[c.uuid] = { n: 0, kind: "could not subscribe (" + e.message + ")", last: "" };
+        }
       }
     }
     retry = 0;
-    state = "unknown";
-    label.textContent = n ? "connected, waiting for data…" : "connected, but the board is not sending data";
+    state = "unknown"; connectedAt = Date.now();
+    label.textContent = n ? "connected, waiting for data…" : "connected, but nothing to listen to";
   }
   async function connect() {
     try {
