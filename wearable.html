@@ -3,39 +3,39 @@
 <title>SeeNARIO wearable</title>
 <style>body{background:#150f1c;color:#eee;font-family:system-ui,sans-serif;margin:0;padding:24px;max-width:760px}
 button{font-size:16px;padding:10px 14px;margin:4px;cursor:pointer}.st-label{font-size:28px}
-a{color:#c9a7ff}</style></head><body>
+a{color:#c9a7ff}
+#wearable-root{margin-top:12px}
+</style></head><body>
 <h2>SeeNARIO wearable</h2>
 <p>Use Chrome or Edge. Close the ST BLE Sensor phone app first. Click <b>Connect SensorTile.box</b>, pick the board, press Pair.</p>
-<div class="camera-screen" style="display:none"></div>
+
+<!-- FIX: give sensortile.js a visible root element to attach to -->
+<div id="wearable-root"></div>
+
+<script src="/model.js"></script>
 <script>
-// sensortile.js: Wearable panel. Automatic: click "Connect SensorTile.box" once and pick the board.
-// Nothing else to configure. Sources, in priority order:
-//   1. Raw accelerometer from the board -> YOUR trained decision tree (model.js) -> standing / walking / stumble
-//   2. The board's own Activity Recognition (characteristic 00000010-...) -> standing / walking
-//   3. The Raspberry Pi bridge (/api/motion) -> standing / walking / stumble
-// (Web Bluetooth cannot connect without a click and the browser's device chooser. That cannot be skipped.)
 (() => {
   const SPEAK_STUMBLE = true;
   const SERVICES = [
     "0000180f-0000-1000-8000-00805f9b34fb", "0000180a-0000-1000-8000-00805f9b34fb",
     "00000000-0001-11e1-9ab4-0002a5d5c51b",
   ];
-  const screen = document.querySelector(".camera-screen");
-  if (!screen) return;
 
-  // ---- LOGIC START (pure functions) ----
-  const ACTIVITY_MAP = { 1: "standing", 2: "walking", 3: "walking", 4: "walking" }; // ST's built-in model has no stumble class
-  const ACC_BIT = 0x00800000; // BlueST "Accelerometer" feature bit
+  // FIX: use the visible root div instead of .camera-screen
+  const root = document.getElementById("wearable-root");
+
+  const ACTIVITY_MAP = { 1: "standing", 2: "walking", 3: "walking", 4: "walking" };
+  const ACC_BIT = 0x00800000;
   const featureMask = (uuid) => parseInt(String(uuid).slice(0, 8), 16) >>> 0;
   const isBlueSt = (uuid) => /^[0-9a-f]{8}-0001-11e1-ac36-0002a5d5c51b$/i.test(uuid);
   function activityState(bytes) { return bytes.length > 2 ? ACTIVITY_MAP[bytes[2]] || null : null; }
-  function parseAcc(bytes) { // 2-byte timestamp, then int16 x,y,z in milli-g (little-endian)
+  function parseAcc(bytes) {
     if (bytes.length < 8) return null;
     const dv = new DataView(Uint8Array.from(bytes).buffer);
     return [dv.getInt16(2, true) / 1000, dv.getInt16(4, true) / 1000, dv.getInt16(6, true) / 1000];
   }
   const looksLikeG = (a) => { const m = Math.hypot(a[0], a[1], a[2]); return m > 0.5 && m < 4; };
-  function makeWindow(buf, now, n = 50) { // buf: [{t,x,y,z}] -> n samples over the last second, or null
+  function makeWindow(buf, now, n = 50) {
     if (buf.length < 10 || buf[0].t > now - 1000 || buf[buf.length - 1].t < now - 300) return null;
     const out = []; let j = 1;
     for (let i = 0; i < n; i++) {
@@ -46,7 +46,6 @@ a{color:#c9a7ff}</style></head><body>
     }
     return out;
   }
-  // ---- LOGIC END ----
 
   const SHOW = { standing: "STANDING", walking: "WALKING", stumble: "STUMBLING", unknown: "no wearable data" };
   const COLOR = { standing: "#9be7a6", walking: "#8ecbff", stumble: "#ff6b6b", unknown: "#9a8fa8" };
@@ -60,9 +59,20 @@ a{color:#c9a7ff}</style></head><body>
     '<button data-a="sim-standing">Sim: standing</button><button data-a="sim-walking">Sim: walking</button><button data-a="sim-stumble">Sim: stumble</button></div>' +
     '<div class="st-events" style="margin-top:6px;color:#ffb4b4"></div>' +
     '<details style="margin-top:8px"><summary>Details (nothing to set up)</summary><div class="st-info" style="margin:6px 0;opacity:.8"></div></details>';
-  screen.parentNode.insertBefore(bar, screen.nextSibling);
+
+  // FIX: append directly to root div
+  root.appendChild(bar);
+
   const $b = (s) => bar.querySelector(s);
   const label = $b(".st-label"), events = $b(".st-events"), info = $b(".st-info");
+
+  // FIX: live motion data display
+  const dataDisplay = document.createElement("div");
+  dataDisplay.style.cssText = "margin-top:12px;padding:12px;background:#1e1530;border-radius:8px;font-family:monospace;font-size:13px;display:none";
+  dataDisplay.innerHTML = '<div style="color:#c9a7ff;margin-bottom:6px;font-weight:bold">📡 Live Accelerometer Data</div>' +
+    '<div class="acc-data" style="color:#9be7a6">Waiting for data...</div>';
+  root.appendChild(dataDisplay);
+  const accDisplay = dataDisplay.querySelector(".acc-data");
 
   let state = "unknown", lastModel = 0, lastAct = 0, lastBoard = 0, fromPi = false;
   const stumbles = [];
@@ -79,7 +89,6 @@ a{color:#c9a7ff}</style></head><body>
     }
   }
 
-  // ---- your trained model (model.js defines classifyMotion) ----
   let modelReady = typeof classifyMotion === "function";
   if (!modelReady) {
     const s = document.createElement("script"); s.src = "/model.js";
@@ -87,23 +96,22 @@ a{color:#c9a7ff}</style></head><body>
     document.head.appendChild(s);
   }
 
-  // ---- Bluetooth ----
-  const seen = {};            // uuid -> {kind, n, last}
-  const accBuf = [];          // {t,x,y,z}
+  const seen = {};
+  const accBuf = [];
   let accUuid = null, prevWin = null; const sniff = {};
+
   function onPacket(uuid, dv) {
     const bytes = Array.from(new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength));
     const rec = (seen[uuid] = seen[uuid] || { n: 0 }); rec.n++; rec.last = bytes.map((x) => x.toString(16).padStart(2, "0")).join(" ");
     lastBoard = Date.now();
     if (!isBlueSt(uuid)) return;
     const mask = featureMask(uuid);
-    if (mask === 0x10) { // Activity recognition
+    if (mask === 0x10) {
       rec.kind = "board activity";
       const s = activityState(bytes); lastAct = Date.now();
       if (s && Date.now() - lastModel > 3000) setState(s, "board activity");
       return;
     }
-    // accelerometer: by feature bit, or by sniffing for ~1 g
     let acc = null;
     if (mask & ACC_BIT) acc = parseAcc(bytes);
     else if (uuid !== accUuid) {
@@ -114,9 +122,13 @@ a{color:#c9a7ff}</style></head><body>
       accUuid = uuid; rec.kind = "accelerometer -> your model";
       accBuf.push({ t: performance.now(), x: acc[0], y: acc[1], z: acc[2] });
       if (accBuf.length > 600) accBuf.splice(0, accBuf.length - 600);
+      // FIX: show live data
+      dataDisplay.style.display = "block";
+      accDisplay.textContent = `X: ${acc[0].toFixed(3)}g  Y: ${acc[1].toFixed(3)}g  Z: ${acc[2].toFixed(3)}g  |  magnitude: ${Math.hypot(acc[0],acc[1],acc[2]).toFixed(3)}g`;
     }
   }
-  setInterval(() => { // run your model twice a second when raw accelerometer data is flowing
+
+  setInterval(() => {
     if (!modelReady || !accBuf.length) return;
     const w = makeWindow(accBuf, performance.now()); if (!w) return;
     const raw = classifyMotion(w); lastModel = Date.now();
@@ -131,6 +143,7 @@ a{color:#c9a7ff}</style></head><body>
       bar.querySelector("details").open = true;
     }
   }, 1000);
+
   setInterval(() => {
     const rows = Object.entries(seen).map(([u, r]) => `${u.slice(0, 8)}… ${r.kind || "ignored"}: ${r.n} packets, last ${r.last}`);
     const silent = connectedAt && !Object.values(seen).some((r) => r.n > 0);
@@ -162,6 +175,7 @@ a{color:#c9a7ff}</style></head><body>
     state = "unknown"; connectedAt = Date.now();
     label.textContent = n ? "connected, waiting for data…" : "connected, but nothing to listen to";
   }
+
   async function connect() {
     try {
       if (!navigator.bluetooth) throw new Error("needs Chrome or Edge over HTTPS (not iPhone)");
@@ -175,9 +189,8 @@ a{color:#c9a7ff}</style></head><body>
     } catch (err) { label.textContent = "connect failed (" + err.message + ")"; }
   }
 
-  // ---- Raspberry Pi bridge fallback ----
   async function pollPi() {
-    if (Date.now() - lastBoard < 5000) return; // the board's own data wins while it is flowing
+    if (Date.now() - lastBoard < 5000) return;
     try {
       const j = await (await fetch("/api/motion", { cache: "no-store" })).json();
       if (j.state && j.age < 10) { fromPi = true; setState(j.state, "via Raspberry Pi"); }
@@ -192,7 +205,6 @@ a{color:#c9a7ff}</style></head><body>
     else if (a && a.startsWith("sim-")) setState(a.slice(4), "simulated");
   });
 })();
-
 </script>
 <p><a href="/">Back to main site</a></p>
 </body></html>
