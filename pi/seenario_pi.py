@@ -24,10 +24,12 @@ import io
 import json
 import math
 import os
+import queue
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import wave
 from datetime import datetime
@@ -60,6 +62,7 @@ ELEVEN_KEY = os.environ.get("ELEVENLABS_API_KEY")
 VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")  # empty = auto-pick (free plans can't use library voices)
 VOICE_CACHE = os.path.join(HERE, "voice.txt")
 ELEVEN_DISABLED = False
+ELEVEN_FAILS = 0
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", "0"))
 INTERVAL = float(os.environ.get("INTERVAL_SECONDS", "6"))         # pause between checks
@@ -190,8 +193,9 @@ def speak_espeak(text: str) -> None:
 def play_pcm(pcm: bytes) -> None:
     """Play raw 24 kHz 16-bit mono audio on Linux (aplay), Windows (winsound) or Mac (afplay)."""
     if sys.platform.startswith("linux"):
+        # timeout: a stuck speaker can never freeze things forever
         subprocess.run(["aplay", "-q", "-t", "raw", "-f", "S16_LE", "-r", "24000", "-c", "1"],
-                       input=pcm, check=False)
+                       input=pcm, check=False, timeout=30)
         return
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
@@ -268,7 +272,8 @@ def init_voice() -> None:
 
 
 def speak(text: str) -> None:
-    global ELEVEN_DISABLED
+    """Speak and wait until finished. Tries ElevenLabs, falls back to the computer voice."""
+    global ELEVEN_DISABLED, ELEVEN_FAILS
     if eleven_ready():
         try:
             r = tts_request(pick_voice(), text)
@@ -279,10 +284,41 @@ def speak(text: str) -> None:
                         os.remove(VOICE_CACHE)
                 raise RuntimeError(f"HTTP {r.status_code} {r.text[:200]}")
             play_pcm(r.content)
+            ELEVEN_FAILS = 0
             return
         except Exception as e:
+            ELEVEN_FAILS += 1
             print(f"ElevenLabs failed ({e}); using computer voice instead")
+            if ELEVEN_FAILS >= 3:
+                ELEVEN_DISABLED = True
+                print("ElevenLabs turned off for this run after 3 failures in a row.")
     speak_espeak(text)
+
+
+# Speaking happens in a background thread so a slow voice can never freeze the camera loop.
+_speech_q: "queue.Queue[str]" = queue.Queue(maxsize=1)
+
+
+def _speech_worker() -> None:
+    while True:
+        text = _speech_q.get()
+        try:
+            speak(text)
+        except Exception as e:
+            print(f"Speech error: {e}")
+
+
+threading.Thread(target=_speech_worker, daemon=True).start()
+
+
+def say(text: str) -> None:
+    """Queue speech without blocking. Only the newest unspoken message is kept."""
+    try:
+        while True:
+            _speech_q.get_nowait()  # drop an older message that hasn't been spoken yet
+    except queue.Empty:
+        pass
+    _speech_q.put(text)
 
 
 # ---------------------------------------------------------------- distance + message
@@ -502,7 +538,7 @@ def run_checks() -> None:
 
     if API_KEY and jpeg:
         try:
-            report(True, "Gemini answered:", build_msg_safe(jpeg))
+            report(True, "Gemini answered:", ask_gemini(jpeg))
         except Exception as e:
             report(False, "Gemini", str(e)[:250])
     elif not API_KEY:
@@ -520,10 +556,6 @@ def run_checks() -> None:
         report(False, "Website upload", str(e)[:250])
 
 
-def build_msg_safe(jpeg: bytes) -> str:
-    return ask_gemini(jpeg)
-
-
 # ---------------------------------------------------------------- main
 
 def main() -> None:
@@ -531,9 +563,8 @@ def main() -> None:
         run_checks()
         return
 
-    init_voice()
-
     if "--test" in sys.argv:
+        init_voice()
         speak("SeeNARIO speaker test. If you can hear this, audio is working.")
         return
 
@@ -550,7 +581,7 @@ def main() -> None:
         cap.read()
         time.sleep(0.1)
 
-    speak("SeeNARIO is online.")
+    say("SeeNARIO is online.")
     last_msg, last_time, errors = "", 0.0, 0
     rows: list = []
 
@@ -577,7 +608,7 @@ def main() -> None:
 
                 repeated = result == last_msg and time.time() - last_time < REPEAT_COOLDOWN
                 if result != CLEAR and not repeated:
-                    speak(result)
+                    say(result)
                     last_msg, last_time = result, time.time()
             except Exception as e:  # keep running through network/camera hiccups
                 errors += 1
@@ -587,7 +618,7 @@ def main() -> None:
                     time.sleep(30)
                     continue
                 if errors == 3:
-                    speak("Connection problem.")
+                    say("Connection problem.")
                 time.sleep(min(2 * errors, 15))
             time.sleep(max(0, INTERVAL - (time.time() - start)))
     except KeyboardInterrupt:
