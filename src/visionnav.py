@@ -60,23 +60,30 @@ def speak(text):
     if not ELEVEN_KEY:
         return
     base = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
-    body = {"text": text, "model_id": "eleven_flash_v2_5"}
+    # FIX: use eleven_turbo_v2_5 (flash renamed) and pcm_16000 which Pi aplay handles reliably
+    body = {"text": text, "model_id": "eleven_turbo_v2_5"}
     hdr = {"xi-api-key": ELEVEN_KEY}
-    if shutil.which("aplay"):  # preinstalled on Raspberry Pi OS
+    if shutil.which("aplay"):
         try:
-            with post_json(base + "?output_format=pcm_24000", body, hdr) as r:
+            with post_json(base + "?output_format=pcm_16000", body, hdr) as r:
                 audio = r.read()
-            subprocess.run(["aplay", "-q", "-t", "raw", "-f", "S16_LE", "-r", "24000", "-c", "1"],
+            subprocess.run(["aplay", "-q", "-t", "raw", "-f", "S16_LE", "-r", "16000", "-c", "1"],
                            input=audio)
             return
         except urllib.error.HTTPError as e:
-            print("voice (pcm) failed:", e.code, "- trying mp3")
+            print("voice (pcm_16000) failed:", e.code, e.read().decode()[:200], "- trying mp3")
+        except Exception as e:
+            print("voice (pcm) error:", e, "- trying mp3")
     players = (["mpg123", "-q", "-"], ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", "-"])
     player = next((p for p in players if shutil.which(p[0])), None)
     if player:
-        with post_json(base, body, hdr) as r:
-            audio = r.read()
-        subprocess.run(player, input=audio)
+        try:
+            body_mp3 = {"text": text, "model_id": "eleven_turbo_v2_5"}
+            with post_json(base, body_mp3, hdr) as r:
+                audio = r.read()
+            subprocess.run(player, input=audio)
+        except Exception as e:
+            print("voice (mp3) failed:", e)
     else:
         print("no audio player found (need aplay, mpg123 or ffplay)")
 
@@ -88,9 +95,18 @@ def upload(rows, jpg):
         return r.status
 
 
-cap = cv2.VideoCapture(0)
+# FIX: open camera with V4L2 backend on Pi to prevent frozen frames
+cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+if not cap.isOpened():
+    # fallback to default backend
+    cap = cv2.VideoCapture(0)
 if not cap.isOpened():
     raise SystemExit("Can't open the camera. Is the webcam plugged in?")
+
+# FIX: set buffer size to 1 so we always get the latest frame, not a stale one
+cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
 rows = []
 last_spoken, last_spoken_at = "", 0.0
@@ -99,11 +115,19 @@ try:
     while True:
         start = time.time()
         try:
-            for _ in range(3):
-                cap.grab()  # skip stale buffered frames
-            ok, frame = cap.read()
+            # FIX: grab more stale frames and do a fresh read to unfreeze
+            for _ in range(5):
+                cap.grab()
+            ok, frame = cap.retrieve()
             if not ok:
-                print("no camera frame")
+                # try a full read as fallback
+                ok, frame = cap.read()
+            if not ok:
+                print("no camera frame — reinitialising camera")
+                cap.release()
+                time.sleep(1)
+                cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 time.sleep(1)
                 continue
             frame = cv2.resize(frame, (640, 480))
