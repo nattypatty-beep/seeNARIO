@@ -139,15 +139,55 @@ URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generate
 
 # ---------------------------------------------------------------- speech
 
-def speak_espeak(text: str) -> None:
-    if sys.platform.startswith("linux"):  # Raspberry Pi
-        subprocess.run(["espeak-ng", "-s", "150", text], check=False)
-    else:  # Windows / Mac laptop
-        import pyttsx3
-        engine = pyttsx3.init()
-        engine.setProperty("rate", 160)
-        engine.say(text)
-        engine.runAndWait()
+def play_pcm(pcm: bytes) -> None:
+    """Play raw 24 kHz 16-bit mono audio on Linux (aplay), Windows (winsound) or Mac (afplay)."""
+    if sys.platform.startswith("linux"):
+        subprocess.run(["aplay", "-q", "-t", "raw", "-f", "S16_LE", "-r", "24000", "-c", "1"],
+                       input=pcm, check=False)
+        return
+    import io
+    import wave
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(pcm)
+    wav = buf.getvalue()
+    if sys.platform == "win32":
+        import winsound
+        winsound.PlaySound(wav, winsound.SND_MEMORY)
+    else:  # Mac
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            f.write(wav)
+            path = f.name
+        subprocess.run(["afplay", path], check=False)
+        os.remove(path)
+
+
+def eleven_ready() -> bool:
+    if not ELEVEN_KEY:
+        return False
+    if sys.platform.startswith("linux"):
+        return bool(shutil.which("aplay"))
+    return True
+
+
+def speak(text: str) -> None:
+    if eleven_ready():
+        try:
+            r = requests.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}?output_format=pcm_24000",
+                headers={"xi-api-key": ELEVEN_KEY, "Content-Type": "application/json"},
+                json={"text": text, "model_id": "eleven_flash_v2_5"}, timeout=15)
+            if r.status_code != 200:
+                raise RuntimeError(f"HTTP {r.status_code} {r.text[:200]}")
+            play_pcm(r.content)
+            return
+        except Exception as e:
+            print(f"ElevenLabs failed ({e}); using espeak instead")
+    speak_espeak(text)
 
 
 def speak(text: str) -> None:
@@ -326,8 +366,7 @@ def log(result: str) -> None:
 # ---------------------------------------------------------------- main
 
 def main() -> None:
-    print("Voice:", "ElevenLabs" if (ELEVEN_KEY and sys.platform.startswith("linux")
-                                     and shutil.which("aplay")) else "espeak (no ElevenLabs key or no aplay)")
+        print("Voice:", "ElevenLabs" if eleven_ready() else "espeak (no ElevenLabs key or no audio player)")
 
     if "--test" in sys.argv:
         speak("SeeNARIO speaker test. If you can hear this, audio is working.")
