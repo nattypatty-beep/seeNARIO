@@ -1,30 +1,27 @@
 #!/usr/bin/env python3
 """
 SeeNARIO
-Webcam -> Gemini vision -> spoken guidance through a speaker.
+Webcam -> Gemini vision -> spoken guidance (ElevenLabs or espeak) -> live website.
 
 Works on both a Windows/Mac laptop and a Raspberry Pi.
 
-LAPTOP SETUP:
-    pip install opencv-python requests pyttsx3
-    PowerShell:  $env:GEMINI_API_KEY="your-key"
-    Mac:         export GEMINI_API_KEY="your-key"
-
-RASPBERRY PI SETUP:
-    sudo apt install -y python3-opencv python3-requests espeak-ng
-    export GEMINI_API_KEY="your-key"
-
 RUN:
-    python seenario_pi.py --test    # check the speaker works
-    python seenario_pi.py           # run the assistant (Ctrl+C to stop)
+    python3 seenario_pi.py --test    # check the speaker works
+    python3 seenario_pi.py           # run the assistant (Ctrl+C to stop)
+
+KEYS: environment variables, or a keys.txt file (lines like GEMINI_API_KEY=...) in this
+folder, the folder above it, or your home folder.
 
 OPTIONAL SETTINGS (environment variables):
-    GEMINI_MODEL, INTERVAL_SECONDS, REPEAT_COOLDOWN, CAMERA_INDEX, LOG_FILE, DEBUG
+    GEMINI_MODEL, INTERVAL_SECONDS, REPEAT_COOLDOWN, CAMERA_INDEX, LOG_FILE, DEBUG,
+    CAMERA_HEIGHT_M, CAMERA_PITCH_DEG, VFOV_DEG, DIST_SCALE, UPLOAD_TO_SITE
     (set DEBUG=1 to print Gemini's raw hazard list)
 """
 import base64
 import json
+import math
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -33,13 +30,50 @@ from datetime import datetime
 import cv2
 import requests
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def load_keys() -> None:
+    for folder in (HERE, os.path.dirname(HERE), os.path.expanduser("~")):
+        for name in ("keys.txt", ".env"):
+            path = os.path.join(folder, name)
+            if os.path.isfile(path):
+                for line in open(path):
+                    line = line.strip()
+                    if line.startswith("export "):
+                        line = line[7:]
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+load_keys()
+
 API_KEY = os.environ.get("GEMINI_API_KEY")
+ELEVEN_KEY = os.environ.get("ELEVENLABS_API_KEY")
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", "0"))
 INTERVAL = float(os.environ.get("INTERVAL_SECONDS", "6"))        # pause between checks
-REPEAT_COOLDOWN = float(os.environ.get("REPEAT_COOLDOWN", "3"))  # don't repeat same warning
+REPEAT_COOLDOWN = float(os.environ.get("REPEAT_COOLDOWN", "4"))  # don't repeat same warning
 LOG_FILE = os.environ.get("LOG_FILE", "detections.jsonl")
 DEBUG = os.environ.get("DEBUG") == "1"
+
+SITE_URL = os.environ.get("SITE_URL", "https://seenario-phi.vercel.app").rstrip("/")
+PI_SECRET = os.environ.get("PI_SECRET", "seenarioPi2026xk4m")
+UPLOAD_TO_SITE = os.environ.get("UPLOAD_TO_SITE", "1") == "1"
+VOICE_ID = "21m00Tcm4TlvDq8ikWAM"  # Rachel
+
+# ===== CAMERA SETUP: measure these for your build (this is what makes steps accurate) =====
+CAMERA_HEIGHT_M = float(os.environ.get("CAMERA_HEIGHT_M", "1.2"))   # lens height above floor
+CAMERA_PITCH_DEG = float(os.environ.get("CAMERA_PITCH_DEG", "20"))  # tilt DOWN from level
+VFOV_DEG = float(os.environ.get("VFOV_DEG", "40"))                  # vertical field of view
+DIST_SCALE = float(os.environ.get("DIST_SCALE", "1.0"))             # calibration factor
+STEP_M = 0.75
+MAX_STEPS = 5
+DARK_LEVEL = 25  # average brightness (0-255) below this = camera covered/too dark
+# =========================================================================================
+
+LAST_BRIGHTNESS = 255.0
 
 PROMPT = """
 You are the eyes of a blind person who is walking forward. The photo comes from a camera worn at chest height, facing straight ahead and tilted slightly down.
@@ -103,7 +137,9 @@ KIND_ORDER = {"drop": 0, "vehicle": 1, "head": 2, "wall": 3, "person": 4, "objec
 URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
 
 
-def speak(text: str) -> None:
+# ---------------------------------------------------------------- speech
+
+def speak_espeak(text: str) -> None:
     if sys.platform.startswith("linux"):  # Raspberry Pi
         subprocess.run(["espeak-ng", "-s", "150", text], check=False)
     else:  # Windows / Mac laptop
@@ -114,10 +150,41 @@ def speak(text: str) -> None:
         engine.runAndWait()
 
 
+def speak(text: str) -> None:
+    if ELEVEN_KEY and sys.platform.startswith("linux") and shutil.which("aplay"):
+        try:
+            r = requests.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}?output_format=pcm_24000",
+                headers={"xi-api-key": ELEVEN_KEY, "Content-Type": "application/json"},
+                json={"text": text, "model_id": "eleven_flash_v2_5"}, timeout=15)
+            r.raise_for_status()
+            subprocess.run(["aplay", "-q", "-t", "raw", "-f", "S16_LE", "-r", "24000", "-c", "1"],
+                           input=r.content, check=False)
+            return
+        except Exception as e:
+            print(f"ElevenLabs failed ({e}); using espeak instead")
+    speak_espeak(text)
+
+
+# ---------------------------------------------------------------- distance + message
+
+def measured_steps(h: dict) -> int:
+    """Steps from camera geometry for things standing on the floor; Gemini's guess otherwise."""
+    guess = max(1, min(8, int(h.get("steps_guess", 3))))
+    if h.get("on_floor") and h.get("kind") != "head":
+        angle = CAMERA_PITCH_DEG + (h["box"][2] / 1000 - 0.5) * VFOV_DEG
+        if angle < 2:
+            return 8  # at the horizon: far away
+        d = CAMERA_HEIGHT_M / math.tan(math.radians(angle)) * DIST_SCALE
+        return max(1, min(8, round(d / STEP_M)))
+    return guess
+
+
 def build_message(data: dict) -> str:
     """Turn Gemini's hazard list into one short spoken sentence (or CLEAR)."""
-    if not data.get("image_ok", True):
-        return "Camera view unclear. Move slowly."
+    # Brightness is checked by the code, not by Gemini's opinion of the photo
+    if LAST_BRIGHTNESS < DARK_LEVEL:
+        return "Camera too dark or covered. Move slowly."
 
     # Keep hazards that overlap the walking corridor (middle half), plus drops/vehicles
     hazards = []
@@ -126,17 +193,24 @@ def build_message(data: dict) -> str:
             ymin, xmin, ymax, xmax = h["box"]
         except (KeyError, ValueError):
             continue
+        if measured_steps(h) > MAX_STEPS:
+            continue  # too far to matter
         if (xmax > 250 and xmin < 750) or h.get("kind") in ("drop", "vehicle"):
             hazards.append(h)
     if not hazards:
         return "CLEAR"
 
     # Most important hazard: by type first, then nearest
-    h = min(hazards, key=lambda x: (KIND_ORDER.get(x.get("kind"), 5), x.get("steps_guess", 8)))
+    h = min(hazards, key=lambda x: (KIND_ORDER.get(x.get("kind"), 5), measured_steps(x)))
     ymin, xmin, ymax, xmax = h["box"]
     cx = (xmin + xmax) / 2
     pos = "left" if cx < 333 else "right" if cx > 667 else "center"
-    steps = STEP_WORDS.get(h.get("steps_guess"), "a few steps")
+    n = measured_steps(h)
+    steps = STEP_WORDS.get(n, "a few steps")
+    if h.get("on_floor") and ymax >= 975:
+        steps = "within " + steps
+    if DEBUG:
+        print(f"   chosen: {h.get('label')} = {n} steps (Gemini guessed {h.get('steps_guess')})")
     label = h.get("label", "obstacle")
     if h.get("height") in ("low", "high"):
         label += f" {h['height']}"
@@ -149,11 +223,13 @@ def build_message(data: dict) -> str:
         side = "right" if cx < 500 else "left"  # away from the hazard
     else:
         side = None
+    if side == pos:  # "clear side" is where the hazard is: don't trust it
+        side = None
 
     kind = h.get("kind")
     if side is None:
         action = "Duck" if kind == "head" else "Step back and turn around"
-    elif kind == "drop":
+    elif kind in ("drop",) or (kind == "vehicle" and n <= 2):
         action = f"Step back, then go {side}"
     elif pos == "left" and side == "right":
         action = "Move slightly right"
@@ -165,16 +241,34 @@ def build_message(data: dict) -> str:
     return f"{label.capitalize()}, {pos}, {steps}. {action}."
 
 
+# ---------------------------------------------------------------- camera + Gemini
+
+def open_camera():
+    if sys.platform == "win32":
+        cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
+    elif sys.platform.startswith("linux"):
+        cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)  # direct driver, avoids GStreamer errors
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    else:
+        cap = cv2.VideoCapture(CAMERA_INDEX)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    return cap
+
+
 def grab_frame(cap) -> bytes:
     """Return the freshest frame as JPEG bytes."""
+    global LAST_BRIGHTNESS
     # Flush stale buffered frames so we analyze what's in front of the user *now*
-    for _ in range(3):
+    for _ in range(4):
         cap.grab()
     ok, frame = cap.read()
     if not ok:
         raise RuntimeError("Could not read from webcam")
     frame = cv2.resize(frame, (640, 480))
-    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    LAST_BRIGHTNESS = float(frame.mean())
+    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
     if not ok:
         raise RuntimeError("Could not encode frame")
     return buf.tobytes()
@@ -183,6 +277,7 @@ def grab_frame(cap) -> bytes:
 def ask_gemini(jpeg: bytes) -> str:
     body = {
         "contents": [{
+            "role": "user",
             "parts": [
                 {"text": PROMPT},
                 {"inline_data": {
@@ -192,23 +287,34 @@ def ask_gemini(jpeg: bytes) -> str:
             ]
         }],
         "generationConfig": {
-            "temperature": 0.1,
             "responseMimeType": "application/json",
             "responseSchema": SCHEMA,
+            "maxOutputTokens": 1500,
         },
     }
     r = requests.post(
         URL,
         headers={"x-goog-api-key": API_KEY, "Content-Type": "application/json"},
         json=body,
-        timeout=20,
+        timeout=25,
     )
-    r.raise_for_status()
-    text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-    data = json.loads(text)
+    if r.status_code != 200:
+        raise RuntimeError(f"Gemini {r.status_code}: {r.text[:300]}")
+    parts = r.json()["candidates"][0]["content"]["parts"]
+    data = json.loads("".join(p.get("text", "") for p in parts))
     if DEBUG:
         print("RAW:", json.dumps(data))
     return build_message(data)
+
+
+# ---------------------------------------------------------------- website + log
+
+def upload(rows: list, jpeg: bytes) -> None:
+    image = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+    r = requests.post(SITE_URL + "/api/update",
+                      headers={"x-api-key": PI_SECRET, "Content-Type": "application/json"},
+                      json={"rows": rows, "image": image}, timeout=15)
+    r.raise_for_status()
 
 
 def log(result: str) -> None:
@@ -217,32 +323,53 @@ def log(result: str) -> None:
         f.write(json.dumps(entry) + "\n")
 
 
+# ---------------------------------------------------------------- main
+
 def main() -> None:
+    print("Voice:", "ElevenLabs" if (ELEVEN_KEY and sys.platform.startswith("linux")
+                                     and shutil.which("aplay")) else "espeak (no ElevenLabs key or no aplay)")
+
     if "--test" in sys.argv:
         speak("SeeNARIO speaker test. If you can hear this, audio is working.")
         return
 
     if not API_KEY:
-        sys.exit("Set GEMINI_API_KEY first (see the setup steps at the top of this file).")
+        sys.exit("Set GEMINI_API_KEY first (environment variable or keys.txt).")
 
-    if sys.platform == "win32":
-        cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
-    else:
-        cap = cv2.VideoCapture(CAMERA_INDEX)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    cap = open_camera()
     if not cap.isOpened():
-        sys.exit("Webcam not found. Check the USB connection or CAMERA_INDEX.")
+        sys.exit("Webcam not found. Close Guvcview/other camera apps, replug the webcam, "
+                 "or check CAMERA_INDEX.")
+
+    print("Warming up camera (letting exposure settle)...")
+    for _ in range(15):
+        cap.read()
+        time.sleep(0.1)
 
     speak("SeeNARIO is online.")
     last_msg, last_time, errors = "", 0.0, 0
+    rows: list = []
 
     try:
         while True:
+            start = time.time()
             try:
-                result = ask_gemini(grab_frame(cap))
+                jpeg = grab_frame(cap)
+                result = ask_gemini(jpeg)
                 errors = 0
-                print(f"[{datetime.now():%H:%M:%S}] {result}")
+                latency = round(time.time() - start, 2)
+                print(f"[{datetime.now():%H:%M:%S}] {result} ({latency}s, brightness {LAST_BRIGHTNESS:.0f})")
                 log(result)
+
+                if UPLOAD_TO_SITE:
+                    rows.append({"timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                 "guidance": "Path clear" if result == "CLEAR" else result,
+                                 "latency_s": latency})
+                    rows = rows[-20:]
+                    try:
+                        upload(rows, jpeg)
+                    except Exception as e:
+                        print(f"Upload failed: {e}")
 
                 is_clear = result.strip().upper().startswith("CLEAR")
                 repeated = result == last_msg and time.time() - last_time < REPEAT_COOLDOWN
@@ -259,7 +386,7 @@ def main() -> None:
                 if errors == 3:
                     speak("Connection problem.")
                 time.sleep(min(2 * errors, 15))
-            time.sleep(INTERVAL)
+            time.sleep(max(0, INTERVAL - (time.time() - start)))
     except KeyboardInterrupt:
         print("\nStopping.")
     finally:
