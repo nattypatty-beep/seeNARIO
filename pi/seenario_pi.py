@@ -14,7 +14,8 @@ folder, the folder above it, or your home folder.
 
 OPTIONAL SETTINGS (environment variables):
     GEMINI_MODEL, INTERVAL_SECONDS, REPEAT_COOLDOWN, CAMERA_INDEX, LOG_FILE, DEBUG,
-    CAMERA_HEIGHT_M, CAMERA_PITCH_DEG, VFOV_DEG, DIST_SCALE, UPLOAD_TO_SITE
+    CAMERA_HEIGHT_M, CAMERA_PITCH_DEG, VFOV_DEG, DIST_SCALE, UPLOAD_TO_SITE,
+    ELEVENLABS_VOICE_ID (leave empty to auto-pick a voice your plan can use)
     (set DEBUG=1 to print Gemini's raw hazard list)
 """
 import base64
@@ -51,6 +52,9 @@ load_keys()
 
 API_KEY = os.environ.get("GEMINI_API_KEY")
 ELEVEN_KEY = os.environ.get("ELEVENLABS_API_KEY")
+VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")  # empty = auto-pick (free plans can't use library voices)
+VOICE_CACHE = os.path.join(HERE, "voice.txt")
+ELEVEN_DISABLED = False
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", "0"))
 INTERVAL = float(os.environ.get("INTERVAL_SECONDS", "6"))        # pause between checks
@@ -61,7 +65,6 @@ DEBUG = os.environ.get("DEBUG") == "1"
 SITE_URL = os.environ.get("SITE_URL", "https://seenario-phi.vercel.app").rstrip("/")
 PI_SECRET = os.environ.get("PI_SECRET", "seenarioPi2026xk4m")
 UPLOAD_TO_SITE = os.environ.get("UPLOAD_TO_SITE", "1") == "1"
-VOICE_ID = "21m00Tcm4TlvDq8ikWAM"  # Rachel
 
 # ===== CAMERA SETUP: measure these for your build (this is what makes steps accurate) =====
 CAMERA_HEIGHT_M = float(os.environ.get("CAMERA_HEIGHT_M", "1.2"))   # lens height above floor
@@ -178,21 +181,70 @@ def play_pcm(pcm: bytes) -> None:
 
 
 def eleven_ready() -> bool:
-    if not ELEVEN_KEY:
+    if not ELEVEN_KEY or ELEVEN_DISABLED:
         return False
     if sys.platform.startswith("linux"):
         return bool(shutil.which("aplay"))
     return True
 
 
-def speak(text: str) -> None:
+def tts_request(voice_id: str, text: str):
+    return requests.post(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=pcm_24000",
+        headers={"xi-api-key": ELEVEN_KEY, "Content-Type": "application/json"},
+        json={"text": text, "model_id": "eleven_flash_v2_5"}, timeout=15)
+
+
+def pick_voice() -> str:
+    """Find a voice this account may use through the API (free plans can't use library voices)."""
+    global VOICE_ID
+    if VOICE_ID:
+        return VOICE_ID
+    if os.path.isfile(VOICE_CACHE):
+        cached = open(VOICE_CACHE).read().strip()
+        if cached:
+            VOICE_ID = cached
+            return VOICE_ID
+    r = requests.get("https://api.elevenlabs.io/v1/voices",
+                     headers={"xi-api-key": ELEVEN_KEY}, timeout=15)
+    if r.status_code != 200:
+        raise RuntimeError(f"could not list your voices (HTTP {r.status_code}). "
+                           "If your key is restricted, allow 'Voices: Read' or make a new key")
+    voices = r.json().get("voices", [])
+    voices.sort(key=lambda v: 0 if v.get("category") == "premade" else 1)
+    for v in voices[:12]:
+        t = tts_request(v["voice_id"], "Hi")
+        if t.status_code == 200:
+            VOICE_ID = v["voice_id"]
+            with open(VOICE_CACHE, "w") as f:
+                f.write(VOICE_ID)
+            print(f"Using ElevenLabs voice: {v.get('name')}")
+            return VOICE_ID
+        print(f"  voice '{v.get('name')}' not allowed on this plan (HTTP {t.status_code})")
+    raise RuntimeError("none of your account's voices work through the API on this plan")
+
+
+def init_voice() -> None:
+    global ELEVEN_DISABLED
     if eleven_ready():
         try:
-            r = requests.post(
-                f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}?output_format=pcm_24000",
-                headers={"xi-api-key": ELEVEN_KEY, "Content-Type": "application/json"},
-                json={"text": text, "model_id": "eleven_flash_v2_5"}, timeout=15)
+            pick_voice()
+        except Exception as e:
+            print(f"ElevenLabs unavailable: {e}")
+            ELEVEN_DISABLED = True
+    print("Voice:", "ElevenLabs" if eleven_ready() else "espeak (computer voice)")
+
+
+def speak(text: str) -> None:
+    global ELEVEN_DISABLED
+    if eleven_ready():
+        try:
+            r = tts_request(pick_voice(), text)
             if r.status_code != 200:
+                if r.status_code == 402:
+                    ELEVEN_DISABLED = True  # plan can't use this voice; stop retrying
+                    if os.path.isfile(VOICE_CACHE):
+                        os.remove(VOICE_CACHE)
                 raise RuntimeError(f"HTTP {r.status_code} {r.text[:200]}")
             play_pcm(r.content)
             return
@@ -361,7 +413,7 @@ def log(result: str) -> None:
 # ---------------------------------------------------------------- main
 
 def main() -> None:
-    print("Voice:", "ElevenLabs" if eleven_ready() else "espeak (no ElevenLabs key or no audio player)")
+    init_voice()
 
     if "--test" in sys.argv:
         speak("SeeNARIO speaker test. If you can hear this, audio is working.")
