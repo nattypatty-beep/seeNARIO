@@ -38,63 +38,22 @@ CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", "0"))
 INTERVAL = float(os.environ.get("INTERVAL_SECONDS", "6"))        # pause between checks
 REPEAT_COOLDOWN = float(os.environ.get("REPEAT_COOLDOWN", "3"))  # don't repeat same warning
 LOG_FILE = os.environ.get("LOG_FILE", "detections.jsonl")
+PROMPT = """You are the eyes of a blind person walking forward. The photo is from a chest-height camera facing straight ahead, tilted slightly down.
 
-PROMPT = """
-ROLE: You are the real-time vision system for a blind person walking forward. The image comes from a chest-height camera facing straight ahead. Your words are read aloud by a speaker, so every word costs the listener time.
+Find EVERY obstacle or danger that could affect their next five steps and list each one. Be generous: if something might be in the way, list it. Do not refuse or give up because the photo is dim, soft or imperfect; make your best judgment. Set image_ok to false ONLY if the photo is almost completely black or fully covered.
 
-TASK: Decide whether anything blocks or endangers their next five steps. Report ONLY the single most important hazard, or say CLEAR. Whenever you report a hazard, you MUST also say exactly how to get around it. Never reply with only "stop" or a warning.
+For each hazard give:
+- label: 1 to 3 plain words (chair, person, wall, stairs down, car, branch, box).
+- kind: one of drop (stairs down, curb, hole, water, open edge), vehicle (moving car, bike, scooter), head (hanging or overhead things at head height or above), wall (wall, closed door, large blocking object), person (people and animals), object (furniture, poles, boxes, anything else).
+- height: "low" for things on the ground below knee height, "high" for head height or above, otherwise "normal".
+- box: tight bounding box [ymin, xmin, ymax, xmax], each 0 to 1000 relative to the image (0,0 is top-left). The bottom of the box must be where the object touches the floor.
+- on_floor: true if the object stands on the floor and its base is visible, false for hanging or floating things.
+- steps_guess: your best estimate of distance in steps (1 step = 0.75 m), integer 1 to 8.
 
-THE PATH: the walking corridor is the center half of the image width, from the bottom edge of the frame up to the horizon. Objects touching or entering this corridor matter. Objects clearly outside it matter only if they are moving toward it (people, vehicles, bikes, pets) or are a drop-off or stairs near its edge.
+Also give free_side: which side of the walking corridor has clear floor to sidestep into: "left", "right", "both", or "none". The corridor is the middle half of the image width.
 
-POSITION (the person's left and right are the image's left and right):
-- left = left third of the image, center = middle third, right = right third.
-- Add "low" only for things on the ground (below knee height, near the bottom of the image).
-- Add "high" only for things at head height or above (hanging branches, signs, open cabinet doors, low ceilings).
-- Skip the height word for normal full-height objects.
+Ignore: floor patterns, shadows, flat rugs, floor lines, the wearer's hands, ceiling lights, posters, things behind glass, walls running alongside the path. Never invent objects. If nothing blocks the path, return an empty hazards list."""
 
-DISTANCE (one step is about 0.75 meters or 2.5 feet):
-- The closer an object's base is to the bottom of the frame, the closer it is. An object whose base touches the bottom edge is within one step.
-- Say "one step", "two steps", "three steps", "four steps", or "five steps".
-- Ignore non-dangerous objects beyond five steps.
-
-PRIORITY (report the highest one present):
-1. Drop-offs, stairs down, curbs, holes, open edges, water.
-2. Moving vehicles, bikes, and fast people or animals heading toward the path.
-3. Head-height hazards.
-4. Walls, closed doors, and large objects directly blocking the corridor.
-5. People, furniture, poles, and objects on the ground in the corridor.
-
-IGNORE: floor patterns, shadows, flat rugs and mats, lines on the floor, the wearer's own hands and clothing, ceiling lights, pictures or posters on walls, anything behind glass, walls running alongside the path, and anything beyond five steps that is not dangerous.
-
-AVOIDANCE (ALWAYS give a direction. Pick the first rule that fits):
-- Hazard on one side or only clipping the corridor edge: "Move slightly left" or "Move slightly right", away from the hazard.
-- Hazard in the center with clear space on one side: "Step left" or "Step right", toward the side with clearly more free space.
-- Hazard fills the center and both sides are tight: "Step back, then go left" or "Step back, then go right", toward the side with more room.
-- Both sides are blocked or there is no visible gap: "Step back and turn around".
-- Drop-off, stairs down, curb, or hole: "Step back, then go left" or "Step back, then go right" along the safe side. Never tell them to walk forward toward it.
-- Moving vehicle or bike: "Step left" or "Step right" toward the side away from it. If it is close, "Step back, then go left" or "Step back, then go right".
-- Head-height hazard: "Step left" or "Step right" to go around it. Use "Duck" only if there is no room to sidestep.
-- Crowd or moving people far ahead: "Slow down and keep left" or "Slow down and keep right".
-- Never direct them toward stairs, traffic, water, or an area you cannot see.
-
-OUTPUT FORMAT:
-- Exactly this shape, 4 to 14 words: <Object> <position>, <distance>. <Avoidance>.
-- Plain words only. No markdown, digits, emojis, quotes, or filler like "I see", "there is", "caution", or "the image".
-- Examples:
-  Chair low, center, two steps. Step right.
-  Person left, one step. Move slightly right.
-  Branch high, center, three steps. Step left.
-  Stairs down, center, two steps. Step back, then go right.
-  Car moving toward you, right, four steps. Step left.
-  Closed door, center, three steps. Step back, then go left.
-  Wall and boxes, both sides, two steps. Step back and turn around.
-- If the path is clear, output exactly: CLEAR
-
-EDGE CASES:
-- Camera blocked, covered, too dark, or too blurry to judge: output exactly "Camera view unclear. Move slowly."
-- If something may be in the path but you cannot tell what it is, say "Unknown obstacle" with position and distance, followed by an avoidance direction. When unsure, favor warning over silence.
-- Never invent objects. Describe only what is clearly visible.
-"""
 
 URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
 
