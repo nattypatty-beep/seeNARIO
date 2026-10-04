@@ -1,0 +1,16 @@
+cat << 'EOF' > sensortile/model_config.json
+{
+  "model_info": {
+    "name": "SensorTile_Anomaly_Detector",
+    "task": "Anomaly Detection"
+  },
+  "sensor_config": {
+    "hardware": "STMicroelectronics SensorTile.box",
+    "sensor_type": "LSM6DSOX 3-Axis Accelerometer",
+    "sampling_rate_hz": 104
+  },
+  "model_parameters": {
+    "anomaly_threshold_g": 2.5
+  }
+}
+EOF
