@@ -172,7 +172,7 @@ Use `python` instead of `python3` on Windows.
 
 ## Credits
 
-**Team:** [Natalia Bernardo, Dhriti Belani, Nacy Alie, Lila Menard]
+**Team:** [Natalia Bernardo Dhriti Belani Nacy Alie Lila Menard]
 
 Made for WolfHacks Hackathon October 2026
 
