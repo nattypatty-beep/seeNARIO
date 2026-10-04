@@ -1,12 +1,12 @@
 # SeeNARIO
 
-**An AI-powered wearable navigation and safety assistant for blind and low-vision users.**
+**An AI-powered wearable navigation designed for blind and low-vision users.**
 
-A chest-mounted webcam watches the path ahead, Gemini identifies obstacles, and a speaker tells the user what the obstacle is, where it is, how far away it is, and which way to step to avoid it. A live website shows what the system is seeing and saying.
+A wearable webcam watches the path ahead, Gemini identifies obstacles, and an ElevenLabs voice tells the user what the obstacle is, where it is, how far away it is, and which way to step to avoid it. A live website shows what the system is seeing and saying for record keeping or for use of a caregiver or family member.
 
-Live site: [https://seenario-phi.vercel.app](https://seenario-phi.vercel.app)
+Live site:(https://seenario-phi.vercel.app)
 
-> **Prototype notice:** SeeNARIO is a class project and an assistive-technology prototype. It is **not** a safety device and must not replace a white cane, guide dog, or other mobility aids.
+This is a functioning prototype, not a fully formed mobility aid.
 
 ---
 
@@ -28,13 +28,12 @@ Webcam  ->  Raspberry Pi  ->  Gemini vision  ->  guidance sentence  ->  Speaker
 
 ```
 
-1. **Edge Motion Monitoring:** The wearable node specifications target the STMicroelectronics SensorTile.box tracking body acceleration via an LSM6DSOX 3-axis accelerometer to run anomaly detection for stumbles or falls.
-2. **Visual Hazard Analysis:** Upon a motion trigger or continuous timer, the Pi grabs a frame from the webcam every few seconds.
-3. **AI Scene Processing:** The frame is sent to the Gemini API, which returns a structured list of hazards (label, type, bounding box, height, and which side has clear floor).
+1. **Edge Motion Monitoring:** The wearable node specifications target the STMicroelectronics SensorTile.box tracking body acceleration via an LSM6DSOX 3-axis accelerometer to run anomaly detection for stumbles.
+2. **Visual Hazard Analysis:** Upon a motion trigger or continuous timer from the Sensortile.box, the Pi grabs a frame from the webcam every few seconds.
+3. **AI Scene Processing:** The frame is sent to the Gemini API, which returns a structured list of hazards (label, type, bounding box, height, and which side is clear).
 4. **Deterministic Guidance Logic:** The Python code turns that list into one short sentence, for example: *"Chair low, center, two steps. Step right."*
 5. **Geometry Calculation:** Distance in steps is calculated from camera geometry (camera height, tilt, and field of view), with Gemini's estimate as a fallback.
-6. **Audio Output:** The sentence is spoken aloud through ElevenLabs, or through a local computer voice if ElevenLabs isn't available.
-7. **Path Clear Silence:** If the path is clear, the system stays silent.
+6. **Audio Output:** The sentence is spoken aloud through ElevenLabs, or through a local computer voice if ElevenLabs isn't available. If the path is clear, the system stays silent.
 8. **Live Logging:** The latest frame, telemetry events, and guidance logs are uploaded to the website.
 
 ---
@@ -52,12 +51,50 @@ Webcam  ->  Raspberry Pi  ->  Gemini vision  ->  guidance sentence  ->  Speaker
 ## Repository layout
 
 ```text
-index.html, app.js, api/   Website (hosted on Vercel)
-pi/seenario_pi.py          Main vision & voice processing program running on the Raspberry Pi
-sensortile/
-├── sensortile_anomaly.py  ST SensorTile.box sensor bridge & edge anomaly detection emulator
-└── model_config.json      Edge ML model configuration metadata for ST SensorTile LSM6DSOX IMU
-src/main.c                 Native C implementation of camera pipeline and libcurl networking
+## Repository Structure
+
+```text
+api/
+├── data.js
+└── update.js
+
+ml/
+├── BOARD_DAY_CHECKLIST.md
+├── calibrate_camera.py
+├── check_recording.py
+├── data/
+├── loader.py
+├── test_all.py
+└── train.py
+
+pi/
+├── seenario_pi.py
+├── sensortile/
+├── model_config.json
+├── sensortile_anomaly.py
+├── main.c
+├── start.sh
+├── uploader.py
+├── vision.py
+└── visionnav.py
+
+test/
+├── lilastryC
+├── pi_logitech_vision.py
+├── test_keys.py
+└── test_vision.py
+
+.gitignore
+README.md
+app.js
+ble-explorer.html
+emulate_sensortile.py
+index.html
+model.js
+recorder.html
+sensortile.js
+```
+
 
 ```
 
@@ -95,8 +132,6 @@ PI_SECRET=your-website-secret
 
 ```
 
-Get a free Gemini key at [https://aistudio.google.com/apikey](https://aistudio.google.com/apikey).
-
 **Never commit keys to GitHub.** Keys can also be set as environment variables.
 
 ### 3. Connect the speaker (Pi)
@@ -125,58 +160,28 @@ Use `python` instead of `python3` on Windows.
 
 ---
 
-## Settings
-
-Optional environment variables:
-
-| Variable | Default | What it does |
-| --- | --- | --- |
-| `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Which Gemini model to use |
-| `INTERVAL_SECONDS` | `6` | Time between camera checks |
-| `REPEAT_COOLDOWN` | `10` | Seconds before repeating the same warning |
-| `CAMERA_INDEX` | `0` | Which camera to use |
-| `CAMERA_HEIGHT_M` | `1.2` | Lens height above the floor (meters) |
-| `CAMERA_PITCH_DEG` | `20` | Camera tilt downward (degrees) |
-| `VFOV_DEG` | `40` | Camera vertical field of view (degrees) |
-| `DIST_SCALE` | `1.0` | Calibration factor for distance |
-| `ANOMALY_THRESHOLD_G` | `2.5` | Acceleration force threshold ($g$) to trigger motion alert |
-| `UPLOAD_TO_SITE` | `1` | Set to `0` to turn off website uploads |
-| `DEBUG` | off | Set to `1` to print Gemini's raw output |
-
----
-
-## Troubleshooting
-
-* **Webcam not found:** Close other camera apps (Guvcview, Zoom), replug the webcam, or try `CAMERA_INDEX=1`.
-* **Gemini 404 error:** The model name is unavailable; set `GEMINI_MODEL` to a current model.
-* **Gemini 429 error:** Free-tier rate limit reached; raise `INTERVAL_SECONDS` or use a Flash-Lite model.
-* **No sound:** Confirm the speaker is the default audio output and that `espeak-ng "test"` is audible.
-* **Sensor Bridge:** Ensure `sensortile_anomaly.py` is running to process telemetry feeds.
-
----
-
 ## Limitations
 
 * Vision runs in the cloud (Gemini API), so the system needs internet and has about 1 to 3 seconds of delay.
 * Distance is an estimate from a single camera and depends on calibration. There is no physical depth sensor.
 * Motion anomaly detection runs on 3-axis accelerometer vectors, which require calibration to avoid false positives during rapid walking.
 * The free Gemini tier has daily and per-minute limits.
-* Not tested for outdoor, low-light, or crowded environments.
-* Frames are sent to Google's API for analysis. Do not point the camera at private people or documents.
+* Limited testing done in a controlled enviroment.
 
 ---
 
 ## Credits
 
-**Team:** [your names here]
+**Team:** [Natalia Bernardo, Dhriti Belani, Nacy Alie, Lila Menard]
 
-**Course:** [course name, instructor, semester]
+Made for WolfHacks Hackathon October 2026
 
 **AI assistance:** Most of the code in this project was written with AI assistance:
 
 * **Claude** (Anthropic) wrote most of the Raspberry Pi program (`pi/seenario_pi.py`), including the camera loop, the hazard-to-guidance logic, distance calculation, speech handling, and the setup instructions.
 * **Gemini** (Google) powers the vision analysis at runtime and also helped write parts of the project code, native C implementations, and ST SensorTile.box edge ML integrations.
+* **ChatGPT** (OpenAI) wrote troubleshooting and website ideas.
 
 The team defined the project goals, directed the design, built and wired the hardware, tested the system, and integrated and debugged everything.
 
-**Services and tools:** STMicroelectronics SensorTile.box, Google Gemini API, ElevenLabs text-to-speech, OpenCV, Vercel, espeak-ng.
+**Services and tools:** STMicroelectronics SensorTile.box, Rasberry Pi, Google Gemini API, ElevenLabs text-to-speech, OpenCV, Vercel, espeak-ng.
