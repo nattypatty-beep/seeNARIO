@@ -36,9 +36,10 @@ FEATS = ["mag_mean", "mag_std", "mag_min", "mag_max", "mag_ptp", "energy",
          "ax_std", "ay_std", "az_std"]
 
 
-def load_csv(path):
-    df = pd.read_csv(path)
-    return df[["ax", "ay", "az"]].to_numpy(float)
+def load_csv(path, rate=None):
+    # Works with phone CSVs and SensorTile.box / ST-tool exports (see loader.py).
+    from loader import load_accel
+    return load_accel(path, rate)[0]
 
 
 def synth_recording(label, n=RATE * 40, rng=None):
@@ -72,7 +73,7 @@ def gather(args):
         for p in sorted(glob.glob(os.path.join(args.data, "*.csv"))):
             lab = os.path.basename(p).split("_")[0]
             if lab in LABELS:
-                recs.append((LABELS.index(lab), os.path.basename(p), load_csv(p)))
+                recs.append((LABELS.index(lab), os.path.basename(p), load_csv(p, args.rate)))
         if len({r[0] for r in recs}) < 3:
             raise SystemExit("Need recordings for all three labels in " + args.data)
     return recs
@@ -113,6 +114,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="data")
     ap.add_argument("--synth", action="store_true")
+    ap.add_argument("--rate", type=float, default=None, help="sampling rate (Hz) of CSVs that have no time column, e.g. the board's logging rate")
     ap.add_argument("--export-js", action="store_true", help="write model.js for in-browser inference")
     args = ap.parse_args()
     recs = gather(args)
